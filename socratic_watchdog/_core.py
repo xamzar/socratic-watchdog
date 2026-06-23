@@ -185,8 +185,8 @@ class SocraticWatchdog:
         """Convert text to speech. Returns Audio widget or None on failure.
 
         Backend is selected by ``SOCRATIC_TTS_BACKEND`` env var (read on each call):
-        - ``kokoro`` (default) — local neural, ~3.8s, 82M model
-        - ``edge-tts`` — Microsoft neural voices, cloud, ~3s
+        - ``edge-tts`` (default) — Microsoft neural voices, cloud, ~3s
+        - ``kokoro`` — local neural, ~3.8s, 82M model
         - ``espeak`` — local espeak-ng, robotic, ~0.03s, no network
 
         Records wall-clock time in ``self._tts_time``.
@@ -196,7 +196,7 @@ class SocraticWatchdog:
         if not text.strip():
             return None
         t0 = time.monotonic()
-        backend = os.environ.get("SOCRATIC_TTS_BACKEND", "kokoro")
+        backend = os.environ.get("SOCRATIC_TTS_BACKEND", "edge-tts")
         if backend == "espeak":
             result = self._speak_espeak(text)
         elif backend == "kokoro":

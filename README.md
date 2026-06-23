@@ -17,7 +17,7 @@ and celebrates with confetti when you get it right.
 | **Embedded test cases** | `%socratic_tests` — embed expected behaviour (`--hidden` for invisible tests) |
 | **Auto-generated tests** | `%socratic_generate_tests` — LLM writes test cases from the task |
 | **Fast path** | When tests pass, skips LLM entirely — instant silent + confetti |
-| **Three TTS backends** | Kokoro (local neural, default) / edge-tts (cloud neural) / espeak-ng (local robotic) |
+| **Three TTS backends** | edge-tts (cloud neural, default) / kokoro (local neural) / espeak-ng (local robotic) |
 | **Socratic method** | Never gives answers — only asks guiding questions |
 | **Subtitle boxes** | Questions and praise shown as styled UI boxes alongside audio |
 | **Confetti + praise** | Random Socratic praise + confetti animation on correct answers |
@@ -57,7 +57,7 @@ pip install socratic-watchdog[edge-tts]   # Microsoft neural voices (cloud, free
 pip install socratic-watchdog[kokoro]     # Local neural TTS (82M model, needs torch)
 ```
 
-No extra install needed for espeak-ng — it's invoked via the system `espeak-ng` binary if present.
+No extra pip install needed for espeak-ng — the package calls the system `espeak-ng` binary directly if it's on your PATH. Install it via `apt install espeak-ng` (Linux) or `brew install espeak-ng` (macOS).
 
 ### LLM access
 
@@ -148,7 +148,7 @@ Or let the LLM generate them from the task:
 
 | Env var | Default | Description |
 |---|---|---|
-| `SOCRATIC_TTS_BACKEND` | `kokoro` | `kokoro` (local neural, ~3.8 s), `edge-tts` (cloud neural, ~3 s), or `espeak` (local robotic, ~0.03 s) |
+| `SOCRATIC_TTS_BACKEND` | `edge-tts` | `kokoro` (local neural, ~3.8 s), `edge-tts` (cloud neural, ~3 s), or `espeak` (local robotic, ~0.03 s) |
 | `SOCRATIC_TTS_VOICE` | `en-US-AndrewNeural` | Voice for edge-tts |
 | `SOCRATIC_KOKORO_VOICE` | `af_heart` | Kokoro voice pack (`af_heart`, `am_adam`, `bm_lewis`, etc.) |
 | `SOCRATIC_ESPEAK_VOICE` | `en-us` | Voice for espeak-ng |
