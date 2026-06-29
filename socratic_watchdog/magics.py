@@ -991,9 +991,14 @@ class SocraticMagics(Magics):
         # Resolve tests in priority order: cache → human-written → AI-generate
         if _watchdog.task_description and not _watchdog._all_test_cases:
             # Step 1: check on-disk cache for this task
+            t_cache_start = time.monotonic()
             cached = _watchdog._load_cached_tests(_watchdog.task_description)
             if cached is not None:
                 _watchdog.hidden_test_cases = cached
+                _watchdog._generate_timings = {
+                    "read": round(time.monotonic() - t_cache_start, 4),
+                    "total": round(time.monotonic() - t_cache_start, 4),
+                }
                 print(f"🧠  Loaded {len(cached)} cached tests for this task.")
             # Step 2: check cell below for human-written tests (cache miss only)
             elif tests_from_below is not None:
