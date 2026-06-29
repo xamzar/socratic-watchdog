@@ -185,12 +185,14 @@ class TestParseResponse:
 
 class TestAnalyze:
     def test_analyze_returns_socratic_question(self, watchdog, socratic_response):
-        with mock.patch.object(watchdog, "_call_llm", return_value=socratic_response):
+        with mock.patch.object(watchdog, "_has_api_key", return_value=True), \
+             mock.patch.object(watchdog, "_call_llm", return_value=socratic_response):
             result = watchdog.analyze("def bubble_sort(arr): pass")
             assert "list" in result.lower() or "dictionary" in result.lower()
 
     def test_analyze_returns_empty_on_silent(self, watchdog, silent_response):
-        with mock.patch.object(watchdog, "_call_llm", return_value=silent_response):
+        with mock.patch.object(watchdog, "_has_api_key", return_value=True), \
+             mock.patch.object(watchdog, "_call_llm", return_value=silent_response):
             result = watchdog.analyze("def fib(n): return n if n < 2 else fib(n-1) + fib(n-2)")
             assert result == ""
 
@@ -205,6 +207,19 @@ class TestAnalyze:
             result = watchdog.analyze("   \n  \t  ")
             assert result == ""
             mock_llm.assert_not_called()
+
+    def test_analyze_no_api_key_no_tests_returns_unavailable(self, watchdog):
+        """Without API key and without test cases, return [LLM_UNAVAILABLE]."""
+        with mock.patch.object(watchdog, "_has_api_key", return_value=False):
+            result = watchdog.analyze("def add(a, b): return a + b")
+            assert result == "[LLM_UNAVAILABLE]"
+
+    def test_analyze_no_api_key_with_tests_still_works(self, watchdog):
+        """With test cases, the analysis skips LLM — even without API key."""
+        watchdog.set_tests("assert add(1, 2) == 3\nassert add(0, 0) == 0")
+        with mock.patch.object(watchdog, "_has_api_key", return_value=False):
+            result = watchdog.analyze("def add(a, b): return a + b")
+            assert result == ""  # silent = all tests passed
 
 
 # ── _run_tests ───────────────────────────────────────────────────────────────
@@ -403,6 +418,24 @@ class TestExtractTestsFromCellBelow:
         cells = [
             {"cell_type": "code", "source": ["x = 1\n"]},
             {"cell_type": "code", "source": ["#TEST CASES\n", "assert True\n"]},
+        ]
+        result = import_fn(cells, 0)
+        assert result == ["assert True"]
+
+    def test_tests_marker_without_cases(self, import_fn):
+        """The '#Tests' marker (without 'cases') should also work."""
+        cells = [
+            {"cell_type": "code", "source": ["%%socratic\n", "x = 1\n"]},
+            {"cell_type": "code", "source": ["#Tests\n", "assert foo(1) == 2\n"]},
+        ]
+        result = import_fn(cells, 0)
+        assert result == ["assert foo(1) == 2"]
+
+    def test_test_cases_underscore_marker(self, import_fn):
+        """The '#test_cases' marker should also work."""
+        cells = [
+            {"cell_type": "code", "source": ["x = 1\n"]},
+            {"cell_type": "code", "source": ["#test_cases\n", "assert True\n"]},
         ]
         result = import_fn(cells, 0)
         assert result == ["assert True"]

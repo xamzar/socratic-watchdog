@@ -248,15 +248,30 @@ def _random_praise() -> str:
 def _resolve_thinking(handle, question: str):
     """Replace thinking indicator with final result.
 
-    Two paths:
+    Three paths:
 
     * **question given** → clear the thinking indicator so ``_deliver()``
       can show its own styled amber question box.
     * **no question** (silent) → code is correct!  Replace the indicator
       with a green praise box + confetti + TTS.
+    * **[LLM_UNAVAILABLE]** → no API key configured, can't verify correctness.
+      Show a warning instead of false praise.
     """
     try:
-        if question:
+        if question == "[LLM_UNAVAILABLE]":
+            handle.update(HTML(
+                "<div style='"
+                "background:#fef3c7; border-left:4px solid #f59e0b;"
+                "padding:12px 16px; margin:8px 0; border-radius:4px;"
+                "font-size:15px; line-height:1.5;'"
+                ">"
+                "<strong>⚠️  Socrates is offline</strong><br>"
+                "No LLM API key configured — can't verify your code.<br>"
+                "Set <code>DEEPSEEK_API_KEY</code> in <code>.env</code> "
+                "or use <code>%socratic_tests</code> for local verification."
+                "</div>"
+            ))
+        elif question:
             # Clear — _deliver() handles the question display
             handle.update(HTML(""))
         else:
@@ -481,8 +496,9 @@ def _extract_tests_from_cell_below(
     if not text:
         return None
 
-    # Does it contain the "#Test cases" marker?
-    if '#test cases' not in text.lower():
+    # Does it contain a test-cell marker?  Supports: #Test cases, #Tests, #test_cases
+    markers = ['#test cases', '#tests', '#test_cases']
+    if not any(m in text.lower() for m in markers):
         return None  # no marker → auto-generate
 
     # Parse assert statements from the cell
@@ -959,25 +975,42 @@ class SocraticMagics(Magics):
         """
         ip = get_ipython()
 
-        # Always try auto-detection from markdown above (if no explicit task).
-        # Also checks the cell below for "#Test cases".
+        # ═════════════════════════════════════════════════════════════════
+        #  PHASE 1 — Resolve tests (cache → cell-below → AI-generate)
+        # ═════════════════════════════════════════════════════════════════
         auto_detected = False
         t_auto_start = time.monotonic()
+        tests_from_below = None  # may be set by _try_auto_detect
         if not _watchdog.task_description:
             task_detected, tests_from_below = _try_auto_detect(cell)
             if task_detected:
                 _watchdog.set_task(task_detected)
                 auto_detected = True
-                # If the cell below had "#Test cases", use those as
-                # explicit tests (visible to the student).  Otherwise
-                # tests_or_none is None → auto-generate below.
-                if tests_from_below is not None:
-                    _watchdog.test_cases = tests_from_below
         _watchdog._auto_detect_time = round(time.monotonic() - t_auto_start, 4)
 
+        # Resolve tests in priority order: cache → human-written → AI-generate
+        if _watchdog.task_description and not _watchdog._all_test_cases:
+            # Step 1: check on-disk cache for this task
+            cached = _watchdog._load_cached_tests(_watchdog.task_description)
+            if cached is not None:
+                _watchdog.hidden_test_cases = cached
+                print(f"🧠  Loaded {len(cached)} cached tests for this task.")
+            # Step 2: check cell below for human-written tests (cache miss only)
+            elif tests_from_below is not None:
+                if tests_from_below:
+                    _watchdog.test_cases = tests_from_below
+                    # Also cache human-written tests for next time
+                    _watchdog._cache_tests(
+                        _watchdog.task_description, tests_from_below, source="manual"
+                    )
+                else:
+                    # Cell exists with marker but no parseable asserts
+                    pass  # fall through to AI-generate
+            else:
+                # Step 3: neither cache nor human tests — AI-generate (caches automatically)
+                pass  # fall through to generate_tests below
+
         # Auto-generate hidden tests if we have a task but no tests yet
-        # (cached by task hash).  Skip if the cell below provided explicit
-        # tests or if hidden tests were already generated.
         if _watchdog.task_description and not _watchdog._all_test_cases:
             _watchdog.generate_tests()
 
@@ -1005,7 +1038,7 @@ class SocraticMagics(Magics):
             question = _watchdog.analyze(cell, error)
             t_analyze_end = time.monotonic()
 
-            if question:
+            if question and question != "[LLM_UNAVAILABLE]":
                 _deliver(question)
                 t_deliver_end = time.monotonic()
             else:
@@ -1055,13 +1088,22 @@ def _post_run_cell_hook(result) -> None:
         return
 
     # Always try auto-detection from markdown above (if no explicit task).
-    # Also checks the cell below for "#Test cases".
+    # Also checks the cell below for human-written tests.
+    tests_from_below = None
     if not _watchdog.task_description:
         task_detected, tests_from_below = _try_auto_detect(source)
         if task_detected:
             _watchdog.set_task(task_detected)
-            if tests_from_below is not None:
+            if tests_from_below is not None and tests_from_below:
                 _watchdog.test_cases = tests_from_below
+                _watchdog._cache_tests(
+                    _watchdog.task_description, tests_from_below, source="manual"
+                )
+            elif tests_from_below is None:
+                # No cell below — check cache before AI-generate
+                cached = _watchdog._load_cached_tests(_watchdog.task_description)
+                if cached is not None:
+                    _watchdog.hidden_test_cases = cached
 
     # Auto-generate hidden tests if we have a task but no tests yet
     if _watchdog.task_description and not _watchdog._all_test_cases:
@@ -1080,7 +1122,7 @@ def _post_run_cell_hook(result) -> None:
     try:
         question = _watchdog.analyze(source, error)
         t1 = time.monotonic()
-        if question:
+        if question and question != "[LLM_UNAVAILABLE]":
             _deliver(question)
             t2 = time.monotonic()
         else:

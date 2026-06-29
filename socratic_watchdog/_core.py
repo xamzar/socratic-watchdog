@@ -245,6 +245,20 @@ class SocraticWatchdog:
         #  PHASE 2 — Build prompt with task + source + error context
         # ═════════════════════════════════════════════════════════════════
         t1 = time.monotonic()
+
+        # Skip LLM entirely if no API key is configured AND no test cases
+        # were set — we can't verify correctness, so don't give false praise.
+        if not self._all_test_cases and not self._has_api_key():
+            self._timings = {
+                "build_prompt": 0.0,
+                "llm_call":     0.0,
+                "parse":        0.0,
+                "total":        0.0,
+            }
+            if self._debug:
+                print("⚠️  LLM unavailable — no API key configured, no test cases set")
+            return "[LLM_UNAVAILABLE]"
+
         prompt = self._build_prompt(source, error)
         t2 = time.monotonic()
 
@@ -561,6 +575,41 @@ class SocraticWatchdog:
                 print(f"     {tc}")
         return tests
 
+    def _load_cached_tests(self, task: str, /) -> Optional[list[str]]:
+        """Check the on-disk cache for tests matching this task.
+
+        Returns the cached test lines (list), or ``None`` if no cache hit.
+        This works for both human-written and AI-generated tests — they
+        share the same cache namespace (keyed by task hash).
+        """
+        import hashlib
+        cache_key = hashlib.sha256(task.strip().encode()).hexdigest()[:16]
+        cache_file = self._tests_cache_dir / f"{cache_key}.json"
+        if not cache_file.exists():
+            return None
+        try:
+            cached = json.loads(cache_file.read_text())
+            return cached.get("tests", [])
+        except Exception:
+            return None
+
+    def _cache_tests(self, task: str, tests: list[str], source: str = "manual") -> None:
+        """Write tests to the on-disk cache, keyed by task hash.
+
+        ``source`` is a label for debugging: ``"manual"`` for human-written
+        tests, ``"generated"`` for AI-generated.
+        """
+        import hashlib
+        cache_key = hashlib.sha256(task.strip().encode()).hexdigest()[:16]
+        self._tests_cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_file = self._tests_cache_dir / f"{cache_key}.json"
+        cache_file.write_text(json.dumps({
+            "task": task.strip(),
+            "tests": tests,
+            "source": source,
+        }, indent=2))
+        print(f"🧠  Cached {len(tests)} {source} tests for this task.")
+
     def detect_task_from_notebook(self, current_source: str) -> Optional[str]:
         """Try to find the markdown cell just above the current code cell.
 
@@ -697,6 +746,14 @@ class SocraticWatchdog:
         )
         return "\n".join(parts)
 
+    def _has_api_key(self) -> bool:
+        """Return True if an LLM API key is configured (any provider)."""
+        return bool(
+            os.environ.get("SOCRATIC_LLM_API_KEY")
+            or os.environ.get("DEEPSEEK_API_KEY")
+            or os.environ.get("OPENAI_API_KEY")
+        )
+
     def _call_llm(self, prompt: str) -> str:
         """Call the LLM API to analyze student code.
 
@@ -763,6 +820,8 @@ class SocraticWatchdog:
         """
         if "[SILENT]" in raw.upper():
             return ""
+        if "[LLM_UNAVAILABLE]" in raw.upper():
+            return "[LLM_UNAVAILABLE]"
         # Take the last non-empty line as the question
         for line in reversed(raw.strip().split("\n")):
             stripped = line.strip()
