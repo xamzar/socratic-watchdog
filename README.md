@@ -22,6 +22,11 @@ and celebrates with confetti when you get it right.
 | **Subtitle boxes** | Questions and praise shown as styled UI boxes alongside audio |
 | **Confetti + praise** | Random Socratic praise + confetti animation on correct answers |
 | **Timing stats** | `%socratic_stats` — per-step wall-clock breakdown |
+| **Audio toggle** | `%socratic_audio on` / `off` — enable/disable spoken questions |
+| **Model switching** | `%socratic_model` — swap LLM models at runtime |
+| **Debug mode** | `%socratic_debug` — per-cell timing, LLM model, TTS backend |
+| **Style toggle** | `%socratic_style brief` / `verbose` — direct or playful mentor |
+| **Exploration mode** | `%socratic_explore` — free experimentation, no task required |
 | **Works everywhere** | JupyterLab, Notebook, Colab, VS Code |
 
 ## Quick start
@@ -103,8 +108,16 @@ The **Socrates persona** instructs the LLM to:
 | `%socratic_generate_tests` | LLM auto-generates hidden test cases from the task |
 | `%socratic_watch on` | Watch every cell automatically (3 s debounce) |
 | `%socratic_watch off` | Stop auto-watching |
+| `%socratic_audio` | Toggle TTS audio on/off |
+| `%socratic_model` | Choose LLM model at runtime |
+| `%socratic_debug` | Per-cell timing/trace breakdown |
+| `%socratic_style` | Switch between brief (direct) and verbose (playful) |
+| `%socratic_explore` | Free experimentation mode (no task needed) |
+| `%socratic_auto_tests` | Auto-gen tests on every `%socratic_task` |
 | `%socratic_off` | Quick alias to stop |
 | `%socratic_reset` | Clear task, tests, and cached notebook data |
+| `%socratic_clear_cache` | Clear generated-tests cache |
+| `%socratic_cache` | List/inspect cached generated tests |
 | `%socratic_stats` | Show timing breakdown of last analysis |
 | `%socratic_help` | Show usage help |
 
@@ -141,6 +154,52 @@ Or let the LLM generate them from the task:
 %socratic_task Write a function that reverses a string
 %socratic_generate_tests  # LLM writes 4-6 assert statements, cached on disk
 ```
+
+### Audio toggle
+
+```python
+%socratic_audio off   # TTS disabled
+%socratic_audio on    # TTS re-enabled
+```
+
+### Model switching
+
+```python
+%socratic_model         # show numbered list of providers
+%socratic_model 2       # pick #2 from the list
+%socratic_model gpt-4o  # custom model name
+```
+
+### Debug mode
+
+```python
+%socratic_debug on   # shows test counts, LLM model+timing, TTS backend+timing
+%socratic_debug off
+```
+
+### Style toggle
+
+```python
+%socratic_style brief    # direct questions, no preambles
+%socratic_style verbose  # patient, playful mentor tone (default)
+```
+
+### Exploration mode
+
+```python
+%socratic_explore on    # Socrates encourages free experimentation
+%socratic_explore off   # back to task-driven mode
+```
+
+### Auto-generated tests
+
+```python
+%socratic_auto_tests on   # auto-gen hidden tests on every %socratic_task
+%socratic_auto_tests off
+%socratic_clear_cache     # clear cached tests (useful for demos)
+%socratic_cache           # inspect the generated-tests cache
+```
+
 
 ## Configuration
 
@@ -194,12 +253,10 @@ MIT
 
 ## Related
 
-- [jupyter-hermes-personalities][2] — the Socrates personality source
 - [edge-tts][1] — free TTS engine
 - [Kokoro][4] — local neural TTS (82M model)
 - [Hermes Agent][3] — the agent framework
 
 [1]: https://github.com/rany2/edge-tts
-[2]: https://github.com/dive4dec/jupyter-hermes-personalities
 [3]: https://hermes-agent.nousresearch.com
 [4]: https://huggingface.co/hexgrad/Kokoro-82M

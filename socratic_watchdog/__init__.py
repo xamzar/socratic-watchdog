@@ -19,7 +19,7 @@ import textwrap
 
 from ._core import SocraticWatchdog, _watchdog
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 
 __all__ = [
     "SocraticWatchdog",
@@ -38,13 +38,19 @@ def load_ipython_extension(ipython):
     print(textwrap.dedent("""\
         🧠  Socratic Watchdog loaded!
         ──────────────────────────────
-        •  %%socratic        — run a cell with analysis
-        •  %socratic_task   — set goal (or 'auto' to read from markdown)
-        •  %socratic_tests          — embed test cases (--hidden for invisible)
+        ⚠️   %%socratic MUST be the first line of a cell!
+        ──────────────────────────────
+        •  %%socratic          — run a cell with Socratic analysis
+        •  %socratic_task      — set goal (or 'auto' to read from markdown)
+        •  %socratic_tests     — embed test cases (--hidden for invisible)
         •  %socratic_generate_tests — auto-gen hidden tests from task
-        •  %socratic_watch  — watch every cell
-
-        Try:  %socratic_help
+        •  %socratic_watch     — watch every cell
+        •  %socratic_audio     — toggle TTS audio on/off
+        •  %socratic_model     — choose LLM model at runtime
+        •  %socratic_debug     — per-cell timing/trace breakdown
+        •  %socratic_explore   — free experimentation mode
+        •  %socratic_auto_tests — auto-gen tests on every task
+        •  %socratic_help      — full command reference
     """))
 
 

@@ -2,6 +2,20 @@
 socratic_watchdog.magics — IPython magics and hooks for Socratic Watchdog.
 
 Loaded automatically by ``%load_ext socratic_watchdog`` via ``__init__.py``.
+
+Architecture
+------------
+The module has three layers:
+
+1. **View helpers** — ``_show_thinking()``, ``_resolve_thinking()``,
+   ``_deliver()``, ``_show_confetti()``.  Render HTML boxes and animations.
+
+2. **SocraticMagics class** — all ``%socratic_*`` line magics and the
+   ``%%socratic`` cell magic.  Each magic calls into ``_watchdog`` methods.
+
+3. **Post-run cell hook** — ``_post_run_cell_hook()`` registered via
+   ``ipython.events.register('post_run_cell', ...)``.  Fires after every
+   cell when ``%socratic_watch on`` is active.
 """
 
 from __future__ import annotations
@@ -19,15 +33,104 @@ from ._core import _watchdog
 
 # ── Shared helpers ────────────────────────────────────────────────────
 
-def _show_thinking():
-    """Show a 'Socrates is thinking...' indicator while the LLM works.
+def _print_debug_table(watchdog) -> None:
+    """Print a formatted timing table for debug mode.
 
-    Returns a display handle. The caller should pass it to
+    Consolidates auto-detect, cache, cell, LLM, and TTS timings into
+    a single aligned table instead of scattered one-liners.
+    """
+    import os as _os
+
+    t = watchdog._timings
+    gt = watchdog._generate_timings
+    ad = watchdog._auto_detect_time
+    rows = []
+
+    def _add(label: str, seconds: float | None, note: str = "") -> None:
+        rows.append((label, seconds, note))
+
+    # ── Cache / generate ──
+    if gt and gt.get("total", 0) > 0:
+        if "read" in gt:
+            test_count = len(watchdog.hidden_test_cases)
+            _add("cache · read",   gt.get("read"),  f"→ {test_count} tests")
+        else:
+            if "llm" in gt:
+                _add("generate · LLM",   gt.get("llm"),   "fresh")
+
+    # ── Auto-detect (always fires, always ~0.004s — not shown) ──
+
+    # ── Cell execution ──
+    if "run_cell" in t:
+        _add("cell execution", t["run_cell"], "")
+
+    # ── LLM analysis ──
+    llm_time = t.get("llm_call", 0)
+    if llm_time > 0:
+        _add("LLM analysis", llm_time, "")
+    else:
+        total_tests = len(watchdog._all_test_cases)
+        if total_tests > 0:
+            _add("LLM analysis", None, "⚡ all pass")
+        else:
+            _add("LLM analysis", None, "⚡ no tests")
+
+    # ── TTS ──
+    tts_time = t.get("deliver", 0)
+    if tts_time > 0:
+        backend = _os.environ.get("SOCRATIC_TTS_BACKEND", "espeak")
+        _add("TTS", tts_time, backend)
+
+    # ── Total ──
+    total = t.get("end_to_end", 0)
+    if ad is not None:
+        total += ad
+    if gt and gt.get("total", 0) > 0:
+        total += gt["total"]
+    total = round(total, 4)
+
+    # ── Render ──
+    W = 54
+    top = "┌─ Socratic Debug " + "─" * (W - 19) + "┐"
+    sep = "├" + "─" * (W - 2) + "┤"
+    bot = "└" + "─" * (W - 2) + "┘"
+
+    lines = [top]
+    for label, secs, note in rows:
+        lhs = f"│ {label:<24}"
+        if isinstance(secs, (int, float)) and secs > 0:
+            rhs = f"{secs:.4f}s"
+        else:
+            rhs = "       —"
+        if note:
+            rhs = f"{rhs}  {note}"
+        pad = W - 2 - len(lhs) - len(rhs)
+        line = lhs + " " * max(1, pad) + rhs + " │"
+        lines.append(line)
+
+    lines.append(sep)
+    lhs = f"│ {'TOTAL':<24}"
+    rhs = f"{total:.4f}s"
+    pad = W - 2 - len(lhs) - len(rhs) - 2
+    line = lhs + " " * max(1, pad) + rhs + "  │"
+    lines.append(line)
+    lines.append(bot)
+
+    print("\n".join(lines))
+
+
+def _show_thinking():
+    """Show a "Socrates is thinking..." indicator while the LLM works.
+
+    Returns a display handle.  The caller must pass it to
     ``_resolve_thinking(handle, question)`` when analysis completes.
+
+    Uses a nanosecond-timestamp display_id so every cell gets its own
+    isolated handle — no cross-cell output bleeding.
     """
     return ipy_display(
         HTML("<i>🏛️  Socrates is thinking…</i>"),
-        display_id="socratic-thinking",
+        display_id=f"socratic-thinking-{__import__('time').monotonic_ns()}",
     )
 
 
@@ -145,9 +248,12 @@ def _random_praise() -> str:
 def _resolve_thinking(handle, question: str):
     """Replace thinking indicator with final result.
 
-    If question is given: clear so ``_deliver()`` can show its styled box.
-    If no question (silent): show a green subtitle box with a random
-    Socratic praise + TTS audio.
+    Two paths:
+
+    * **question given** → clear the thinking indicator so ``_deliver()``
+      can show its own styled amber question box.
+    * **no question** (silent) → code is correct!  Replace the indicator
+      with a green praise box + confetti + TTS.
     """
     try:
         if question:
@@ -166,13 +272,14 @@ def _resolve_thinking(handle, question: str):
             ))
             # Confetti!
             _show_confetti()
-            # Also speak the praise
-            try:
-                audio = _watchdog.speak(praise)
-                if audio is not None:
-                    ipy_display(audio)
-            except Exception:
-                pass
+            # Also speak the praise (if audio is on)
+            if _audio_on():
+                try:
+                    audio = _watchdog.speak(praise)
+                    if audio is not None:
+                        ipy_display(audio)
+                except Exception:
+                    pass
     except Exception:
         pass
 
@@ -253,6 +360,11 @@ def _extract_error_from_info(info) -> str:
     return ""
 
 
+def _audio_on() -> bool:
+    """Check if audio output is enabled (SOCRATIC_AUDIO env var)."""
+    return os.environ.get("SOCRATIC_AUDIO", "on").strip().lower() != "off"
+
+
 def _deliver(question: str) -> None:
     """Display the Socratic question as a styled subtitle + TTS audio.
 
@@ -270,30 +382,120 @@ def _deliver(question: str) -> None:
         f"{question}"
         "</div>"
     ))
+    if not _audio_on():
+        return
     try:
         audio = _watchdog.speak(question)
         if audio is not None:
             ipy_display(audio)
-            if _watchdog._debug and _watchdog._tts_time is not None:
-                print(f"⏱  tts={_watchdog._tts_time}s  (backend={os.environ.get('SOCRATIC_TTS_BACKEND', 'espeak')})")
     except Exception:
         pass
 
 
-def _try_auto_detect(source: str) -> str | None:
+def _try_auto_detect(source: str) -> tuple[str | None, list[str] | None]:
     """Try to auto-detect the task from the markdown cell above.
 
-    Returns the detected task text or None.
+    Returns (task_text, tests_or_none) where:
+    - ``task_text`` is the markdown content (or None if not found)
+    - ``tests_or_none`` is:
+        * ``None`` → no ``#Test cases`` cell below → caller should auto-generate
+        * ``[]``   → could not find notebook (no-op)
+        * ``[list]`` → parsed test assertions from the cell below
+
+    Tries jupyter-mcp-cli first, then scans .ipynb files in cwd.
     """
+    import json as _json, os as _os, re as _re, glob as _glob
+
+    # Try jupyter-mcp-cli (DIVE platform)
     try:
         task = _watchdog.detect_task_from_notebook(source)
         if task:
-            # Note: we don't set task_description (that's for explicit tasks).
-            # auto_detect_task flag controls whether we attempt detection.
-            return task
+            return (task, None)
     except Exception:
         pass
-    return None
+
+    # Fallback: scan notebook files in cwd for the current cell
+    # IPython strips the cell magic line (%%socratic) from the `cell`
+    # parameter, but the notebook file stores the FULL source.  We must
+    # strip %% and % magic lines from the notebook source before comparing.
+    source_stripped = source.strip()
+    try:
+        for nb_path in _glob.glob('*.ipynb'):
+            nb = _json.load(open(nb_path))
+            cells = nb.get('cells', [])
+            for idx, cell in enumerate(cells):
+                if cell.get('cell_type') != 'code':
+                    continue
+                cell_src_raw = ''.join(cell.get('source', []))
+                # Strip cell magics (%%socratic, %%time, etc.) and line
+                # magics (%some_magic) from the leading lines so the
+                # remaining code matches what IPython hands the magic.
+                cell_src = _re.sub(
+                    r'^(%%.*|%.*)\n', '', cell_src_raw, flags=_re.MULTILINE
+                ).strip()
+                if cell_src != source_stripped:
+                    continue
+                # Found our cell — check the cell above for task
+                if idx == 0:
+                    return (None, None)
+                above = cells[idx - 1]
+                if above.get('cell_type') != 'markdown':
+                    return (None, None)
+                text = ''.join(above.get('source', []))
+                if len(text.strip()) <= 30:
+                    return (None, None)
+                if 'task' not in text.lower():
+                    return (None, None)
+                text = _re.sub(r'<!--.*?-->', '', text, flags=_re.DOTALL)
+                task = text.strip()
+
+                # ── Check the cell below for "#Test cases" ──────────
+                tests = _extract_tests_from_cell_below(cells, idx)
+                return (task, tests)
+    except Exception:
+        pass
+    return (None, None)
+
+
+def _extract_tests_from_cell_below(
+    cells: list[dict], current_idx: int
+) -> list[str] | None:
+    """Scan the cell below the current code cell for ``#Test cases``.
+
+    Returns:
+    - ``None`` → cell below does NOT contain ``#Test cases`` → auto-generate
+    - ``[list]`` → parsed assert lines (might be empty if the cell is just
+      a heading with no actual test code)
+    """
+    import re as _re
+
+    # Look at the cell directly below
+    if current_idx + 1 >= len(cells):
+        return None  # no cell below → auto-generate
+
+    below = cells[current_idx + 1]
+    if below.get('cell_type') != 'code':
+        return None  # cell below isn't code → auto-generate
+
+    text = ''.join(below.get('source', [])).strip()
+    if not text:
+        return None
+
+    # Does it contain the "#Test cases" marker?
+    if '#test cases' not in text.lower():
+        return None  # no marker → auto-generate
+
+    # Parse assert statements from the cell
+    tests = []
+    for line in text.split('\n'):
+        stripped = line.strip()
+        # Skip comments and blank lines
+        if stripped.startswith('#') or not stripped:
+            continue
+        if stripped.startswith('assert '):
+            tests.append(stripped)
+
+    return tests  # may be empty if no parseable asserts
 
 
 # ── Debounce (for auto-watch mode) ────────────────────────────────────
@@ -356,63 +558,6 @@ class SocraticMagics(Magics):
             print(f"🧠  Task set: “{line}”")
 
     # ── socratic_tests (for track authors) ─────────────────────────────
-
-    @line_magic
-    def socratic_tests(self, line: str) -> None:
-        """Set pre-assigned test cases that Socrates checks against.
-
-        The track author can embed test cases so Socrates knows the exact
-        expected behavior — not just 'looks correct' but 'passes the spec.'
-
-        Usage::
-
-            %%socratic_tests
-            assert fib(0) == 0
-            assert fib(1) == 1
-            assert fib(5) == 5
-
-            %%socratic_tests --hidden
-            assert fib(0) == 0
-            assert fib(5) == 5
-
-        ``--hidden`` stores tests in hidden_test_cases — they still run
-        but students never see them.  Call with no body to clear.
-        """
-        # --hidden flag: toggle hidden mode for this cell
-        hidden = line.strip().lower() == "--hidden"
-
-        # Use cell body (the multi-line content after the magic line).
-        # We re-read the cell source through IPython's history.
-        ip = get_ipython()
-        cells = ip.user_ns.get("_ih", [])
-        cell_body = ""
-        if cells:
-            # Last history entry is the current cell
-            raw = cells[-1] if isinstance(cells, list) else ""
-            # Strip the magic line
-            lines = raw.split("\n")
-            if lines and ("socratic_tests" in lines[0]):
-                cell_body = "\n".join(lines[1:])
-
-        if not cell_body.strip():
-            _watchdog.test_cases = []
-            _watchdog.hidden_test_cases = []
-            print("🧠  Test cases cleared.")
-            return
-
-        tests = [
-            l.strip() for l in cell_body.strip().split("\n")
-            if l.strip() and not l.strip().startswith("#")
-        ]
-
-        if hidden:
-            _watchdog.hidden_test_cases = tests
-            print(f"🧠  {len(tests)} hidden test case(s) set (students won't see them).")
-        else:
-            _watchdog.test_cases = tests
-            print(f"🧠  {len(tests)} test case(s) set:")
-            for tc in _watchdog.test_cases:
-                print(f"     {tc}")
 
     # ── socratic_generate_tests ────────────────────────────────────────
 
@@ -495,19 +640,296 @@ class SocraticMagics(Magics):
             print(f"   tts ({backend:<8}): {_watchdog._tts_time:>8.3f}s")
 
     @line_magic
+    def socratic_audio(self, line: str) -> None:
+        """Toggle TTS audio on or off.
+
+        Usage::
+
+            %socratic_audio on
+            %socratic_audio off
+            %socratic_audio       # show current state
+        """
+        mode = line.strip().lower()
+        if mode in ("on", "off"):
+            os.environ["SOCRATIC_AUDIO"] = mode
+            print(f"🔇  Audio {'ON' if mode == 'on' else 'OFF'}")
+        else:
+            current = os.environ.get("SOCRATIC_AUDIO", "on")
+            print(f"🔇  Audio: {current}  |  Use on/off to toggle")
+
+    @line_magic
+    def socratic_model(self, line: str) -> None:
+        """Select the LLM model from a curated list (or type a custom one).
+
+        Usage::
+
+            %socratic_model          # show numbered list + current model
+            %socratic_model 2        # pick #2 from the list
+            %socratic_model deepseek-chat   # custom model name (keeps current base URL)
+        """
+        line = line.split("#")[0]
+        parts = line.strip().split()
+
+        # ── Curated providers ──
+        known = [
+            ("DeepSeek Chat",     "deepseek-chat",     "https://api.deepseek.com"),
+            ("DeepSeek Reasoner", "deepseek-reasoner", "https://api.deepseek.com"),
+            ("GPT-4o",            "gpt-4o",            "https://api.openai.com/v1"),
+            ("GPT-4o Mini",       "gpt-4o-mini",       "https://api.openai.com/v1"),
+            ("Claude 3.5 Sonnet", "claude-3-5-sonnet-20241022", "https://api.anthropic.com/v1"),
+            ("Claude 3 Haiku",    "claude-3-haiku-20240307",     "https://api.anthropic.com/v1"),
+        ]
+
+        if not parts:
+            # Show picker + current
+            current_model = os.environ.get("SOCRATIC_LLM_MODEL", "deepseek-chat")
+            current_base  = os.environ.get("SOCRATIC_LLM_BASE_URL", "https://api.deepseek.com")
+            print("🤖  Available models:\n")
+            for idx, (name, model, base) in enumerate(known, 1):
+                marker = " ← current" if model == current_model else ""
+                print(f"    {idx}. {name}  ({model}){marker}")
+            print(f"\n    Current: {current_model}")
+            print(f"    Base:    {current_base}")
+            print(f"\n    Pick one:  %socratic_model <number>")
+            print(f"    Or custom: %socratic_model <model-name>")
+            return
+
+        # ── Try number pick ──
+        try:
+            idx = int(parts[0])
+            if 1 <= idx <= len(known):
+                name, model, base_url = known[idx - 1]
+                os.environ["SOCRATIC_LLM_MODEL"] = model
+                os.environ["SOCRATIC_LLM_BASE_URL"] = base_url
+                print(f"🤖  {name}  ({model})")
+                print(f"    {base_url}")
+                return
+        except ValueError:
+            pass
+
+        # ── Try name match ──
+        for name, model, base_url in known:
+            if parts[0].lower() in model.lower() or parts[0].lower() in name.lower():
+                os.environ["SOCRATIC_LLM_MODEL"] = model
+                os.environ["SOCRATIC_LLM_BASE_URL"] = base_url
+                print(f"🤖  {name}  ({model})")
+                print(f"    {base_url}")
+                return
+
+        # ── Custom model (keep current base URL) ──
+        model = parts[0]
+        os.environ["SOCRATIC_LLM_MODEL"] = model
+        print(f"🤖  Custom model: {model}")
+
+    @line_magic
+    def socratic_debug(self, line: str) -> None:
+        """Toggle debug mode — shows inline timing and trace info.
+
+        Usage::
+
+            %socratic_debug on
+            %socratic_debug off
+            %socratic_debug      # show current state
+
+        When on, every cell prints:
+        - 🧪  test pass/fail counts
+        - 🤖  which LLM model was called + how long
+        - 🔊  which TTS backend ran + how long
+        - ⏱   end-to-end timing summary
+        """
+        mode = line.strip().lower()
+        if mode in ("on", "off"):
+            _watchdog._debug = (mode == "on")
+            os.environ["SOCRATIC_DEBUG"] = "1" if mode == "on" else ""
+            print(f"🐛  Debug {'ON' if _watchdog._debug else 'OFF'}")
+        else:
+            print(f"🐛  Debug: {'on' if _watchdog._debug else 'off'}  |  Use on/off")
+
+    @line_magic
+    def socratic_style(self, line: str) -> None:
+        """Switch Socrates' response style.
+
+        Usage::
+
+            %socratic_style brief     # direct questions, no preambles
+            %socratic_style verbose   # patient, playful mentor tone (default)
+            %socratic_style           # show current style
+        """
+        mode = line.strip().lower()
+        if mode in ("brief", "verbose"):
+            _watchdog.style = mode
+            print(f"🏛️  Style: {mode}")
+        else:
+            print(f"🏛️  Style: {_watchdog.style}  |  Use brief/verbose")
+
+    @line_magic
+    def socratic_explore(self, line: str) -> None:
+        """Toggle exploration mode — Socrates encourages free experimentation
+        when no task is set, instead of asking what the student is trying to do.
+
+        Usage::
+
+            %socratic_explore on
+            %socratic_explore off
+            %socratic_explore      # show current state
+        """
+        mode = line.strip().lower()
+        if mode in ("on", "off"):
+            _watchdog.exploration_mode = (mode == "on")
+            print(f"🔍  Exploration mode {'ON' if _watchdog.exploration_mode else 'OFF'}")
+        else:
+            state = "on" if _watchdog.exploration_mode else "off"
+            print(f"🔍  Exploration mode: {state}  |  Use on/off")
+
+    @line_magic
+    def socratic_auto_tests(self, line: str) -> None:
+        """Toggle auto-generate: every ``%socratic_task`` automatically runs
+        test generation + caching behind the scenes.
+
+        Usage::
+
+            %socratic_auto_tests on
+            %socratic_auto_tests off
+            %socratic_auto_tests      # show current state
+
+        When on, setting a task like ``%socratic_task Write a sort function``
+        immediately calls the LLM to generate tests and caches them.
+        Subsequent cells get instant test validation — no manual
+        ``%socratic_generate_tests`` needed.
+        """
+        mode = line.strip().lower()
+        if mode in ("on", "off"):
+            _watchdog.auto_generate_tests = (mode == "on")
+            print(f"🧪  Auto-generate tests {'ON' if _watchdog.auto_generate_tests else 'OFF'}")
+        else:
+            state = "on" if _watchdog.auto_generate_tests else "off"
+            print(f"🧪  Auto-generate tests: {state}  |  Use on/off")
+
+    @line_magic
+    def socratic_clear_cache(self, line: str) -> None:
+        """Clear the generated-tests cache so the next ``%socratic_generate_tests``
+        calls the LLM fresh (useful for demos).
+
+        Usage::
+
+            %socratic_clear_cache
+        """
+        import shutil
+        if _watchdog._tests_cache_dir.exists():
+            count = len(list(_watchdog._tests_cache_dir.glob("*.json")))
+            shutil.rmtree(_watchdog._tests_cache_dir)
+            _watchdog._tests_cache_dir.mkdir(parents=True, exist_ok=True)
+            print(f"🧠  Cleared {count} cached test file(s).  Next generate_tests will call LLM.")
+        else:
+            print("🧠  No cache to clear.")
+
+    @line_magic
+    def socratic_cache(self, line: str) -> None:
+        """Inspect the generated-tests cache.
+
+        Usage::
+
+            %socratic_cache              # list all cached tasks
+            %socratic_cache show         # show cached tests for the current task
+            %socratic_cache show <hash>  # show cached tests for a specific hash
+        """
+        arg = line.strip().lower()
+
+        if arg == "show":
+            # Show tests for the current task
+            entry = _watchdog.peek_cache()
+            if entry is None:
+                if _watchdog.task_description:
+                    print(f"🧠  No cached tests for: “{_watchdog.task_description[:80]}...”")
+                else:
+                    print("🧠  No task set. Use %%socratic or %socratic_task first.")
+                return
+            self._print_cache_entry(entry)
+            return
+
+        if arg.startswith("show "):
+            # Show tests for a specific hash
+            h = arg.split("show ")[1].strip()
+            entries = _watchdog.list_cache()
+            for e in entries:
+                if e["hash"].startswith(h):
+                    self._print_cache_entry(e)
+                    return
+            print(f"🧠  No cache entry with hash starting with “{h}”.")
+            return
+
+        # Default: list all cached entries
+        entries = _watchdog.list_cache()
+        if not entries:
+            print("🧠  No cached tests.  Run %%socratic with a task to auto-generate.")
+            return
+
+        print(f"🧠  {len(entries)} cached test file(s):\n")
+        # Pre-compute current task hash for the ← current marker
+        current_hash = ""
+        if _watchdog.task_description:
+            import hashlib
+            current_hash = hashlib.sha256(
+                _watchdog.task_description.encode()
+            ).hexdigest()[:16]
+
+        for e in entries:
+            preview = e["task"] if len(e["task"]) <= 70 else e["task"][:67] + "..."
+            age = (
+                f"{e['age_seconds']}s ago" if e["age_seconds"] < 120
+                else f"{e['age_seconds'] // 60}m ago" if e["age_seconds"] < 7200
+                else f"{e['age_seconds'] // 3600}h ago"
+            )
+            marker = " ← current" if e["hash"] == current_hash else ""
+            print(f"    {e['hash']}  {e['test_count']:>2} tests  {age}  {preview}{marker}")
+
+        print(f"\n    %socratic_cache show        — show tests for current task")
+        print(f"    %socratic_cache show <hash> — show tests for a specific hash")
+        print(f"    %socratic_clear_cache       — clear all cached tests")
+
+    @staticmethod
+    def _print_cache_entry(entry: dict) -> None:
+        """Print a single cache entry with its tests."""
+        age = entry["age_seconds"]
+        if age < 120:
+            age_str = f"{age}s ago"
+        elif age < 7200:
+            age_str = f"{age // 60}m ago"
+        else:
+            age_str = f"{age // 3600}h ago"
+
+        print(f"🧠  Task: {entry['task'][:120]}")
+        print(f"    Hash:  {entry['hash']}")
+        print(f"    Age:   {age_str}")
+        print(f"    Tests: {len(entry['tests'])}")
+        if entry["tests"]:
+            print()
+            for tc in entry["tests"]:
+                print(f"    {tc}")
+        else:
+            print("    (no test cases)")
+
+    @line_magic
     def socratic_help(self, line: str) -> None:
         """Show usage help."""
         print(textwrap.dedent("""\
             🏛️  **Socratic Watchdog — Commands**
             ─────────────────────────────────────
+            ⚠️   %%socratic MUST be the first line of a cell!
+                (no comments or code before it)
+            ─────────────────────────────────────
             %%socratic          Run a cell with Socratic analysis
-            %socratic_task     Describe your coding goal
-                                (or 'auto' to read from markdown above)
-            %socratic_tests    Set expected test cases (track author)
             %socratic_watch    Watch every cell (on/off)
             %socratic_off      Stop watching
             %socratic_reset    Clear Socrates's context
             %socratic_stats    Show timing breakdown of last analysis
+            %socratic_audio    Toggle TTS audio on/off
+            %socratic_model    Select LLM model (e.g. deepseek-chat, gpt-4o)
+            %socratic_debug    Toggle debug trace (timing, model, TTS info)
+            %socratic_auto_tests  Auto-generate tests on every %socratic_task
+            %socratic_explore   Toggle exploration mode (free experimentation)
+            %socratic_cache    Inspect generated-tests cache
+            %socratic_clear_cache  Clear generated-tests cache (for demos)
             %socratic_help     This help
 
             **Quick start (explicit task)**
@@ -530,24 +952,34 @@ class SocraticMagics(Magics):
     def socratic(self, line: str, cell: str) -> None:
         """Execute a cell then have Socrates analyse it.
 
-        If ``%socratic_task auto`` is set, the task is read from the
-        markdown cell directly above this one.
+        Flow: run cell → show thinking → analyze → resolve (praise or question)
 
-        Usage::
-
-            %%socratic
-            def greet(name):
-                return f"Hello, {name}!"
+        Always auto-detects the task from the markdown cell above
+        (if it contains the word "Task").  Explicit %socratic_task overrides.
         """
         ip = get_ipython()
 
-        # Auto-detect task from markdown above (if enabled and no explicit task)
+        # Always try auto-detection from markdown above (if no explicit task).
+        # Also checks the cell below for "#Test cases".
         auto_detected = False
-        if _watchdog.auto_detect_task and not _watchdog.task_description:
-            detected = _try_auto_detect(cell)
-            if detected:
-                _watchdog.task_description = detected
+        t_auto_start = time.monotonic()
+        if not _watchdog.task_description:
+            task_detected, tests_from_below = _try_auto_detect(cell)
+            if task_detected:
+                _watchdog.set_task(task_detected)
                 auto_detected = True
+                # If the cell below had "#Test cases", use those as
+                # explicit tests (visible to the student).  Otherwise
+                # tests_or_none is None → auto-generate below.
+                if tests_from_below is not None:
+                    _watchdog.test_cases = tests_from_below
+        _watchdog._auto_detect_time = round(time.monotonic() - t_auto_start, 4)
+
+        # Auto-generate hidden tests if we have a task but no tests yet
+        # (cached by task hash).  Skip if the cell below provided explicit
+        # tests or if hidden tests were already generated.
+        if _watchdog.task_description and not _watchdog._all_test_cases:
+            _watchdog.generate_tests()
 
         t_cell_start = time.monotonic()
         result = ip.run_cell(cell)
@@ -582,9 +1014,7 @@ class SocraticMagics(Magics):
             if handle is not None:
                 _resolve_thinking(handle, question)
 
-        # Clear auto-detected task so the next %%socratic cell re-detects
-        # its own markdown (avoids leaking "Palindrome Checker" into a
-        # "Fibonacci" cell).
+        # Clear auto-detected task so the next cell re-detects its own markdown
         if auto_detected:
             _watchdog.task_description = ""
 
@@ -594,15 +1024,7 @@ class SocraticMagics(Magics):
         _watchdog._timings["end_to_end"] = round(t_deliver_end - t_cell_start, 3)
 
         if _watchdog._debug:
-            t = _watchdog._timings
-            print(
-                f"⏱  cell={t['run_cell']}s  "
-                f"build={t['build_prompt']}s  "
-                f"llm={t['llm_call']}s  "
-                f"parse={t['parse']}s  "
-                f"tts={t.get('deliver', 0)}s  "
-                f"→ total={t['end_to_end']}s"
-            )
+            _print_debug_table(_watchdog)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -632,11 +1054,18 @@ def _post_run_cell_hook(result) -> None:
     if not _should_analyze():
         return
 
-    # Auto-detect task from markdown above (if enabled, no explicit task)
-    if _watchdog.auto_detect_task and not _watchdog.task_description:
-        detected = _try_auto_detect(source)
-        if detected:
-            _watchdog.task_description = detected
+    # Always try auto-detection from markdown above (if no explicit task).
+    # Also checks the cell below for "#Test cases".
+    if not _watchdog.task_description:
+        task_detected, tests_from_below = _try_auto_detect(source)
+        if task_detected:
+            _watchdog.set_task(task_detected)
+            if tests_from_below is not None:
+                _watchdog.test_cases = tests_from_below
+
+    # Auto-generate hidden tests if we have a task but no tests yet
+    if _watchdog.task_description and not _watchdog._all_test_cases:
+        _watchdog.generate_tests()
 
     error = _extract_error_from_info(result or info)
     t0 = time.monotonic()
@@ -666,8 +1095,7 @@ def _post_run_cell_hook(result) -> None:
     if _watchdog._debug:
         t = _watchdog._timings
         print(
-            f"⏱  [auto] build={t['build_prompt']}s  "
-            f"llm={t['llm_call']}s  "
+            f"⏱  [auto] llm={t['llm_call']}s  "
             f"tts={t.get('deliver', 0)}s  "
-            f"→ total={t['end_to_end']}s"
+            f"→ {t['end_to_end']}s total"
         )

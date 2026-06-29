@@ -52,13 +52,54 @@ SOCRATIC_RULES = textwrap.dedent("""\
     walking beside the student, not a lecturer.
 """)
 
+SOCRATIC_RULES_BRIEF = textwrap.dedent("""\
+    You are Socrates, the ancient Greek philosopher, acting as a coding mentor.
+
+    RULES
+    1. NEVER give a direct answer. NEVER show corrected code.
+    2. Ask exactly ONE guiding question per response.
+    3. Reference something SPECIFIC in the student's code.
+    4. ONLY respond [SILENT] when ALL of these are true:
+       a) The code has NO syntax errors
+       b) The code runs without runtime errors
+       c) The code correctly fulfills the task
+       If the code has ANY error (syntax, runtime, logical) → it is BROKEN.
+       A broken submission CANNOT be [SILENT]. Always ask a question.
+    5. An error means the student is STRUGGLING and needs guidance.
+       Ask about the error — help them think about what went wrong.
+
+    SILENCE protocol: only when code is flawless AND correct, respond:
+    [SILENT]
+
+    STYLE: BE DIRECT.  No preambles.  Do NOT say "Ah", "I see", "Let me
+    ask you", "Interesting", or any lead-in.  Your response is ONLY the
+    question.  Just the question.  Example: "Why did you choose subtraction
+    instead of addition?"  Not "Ah, I see you've used subtraction. Let me
+    ask: why did you choose that?"
+""")
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  CORE ENGINE
 # ═══════════════════════════════════════════════════════════════════════════
 
 class SocraticWatchdog:
-    """Watches notebook cell executions and speaks Socratic questions."""
+    """Socratic coding mentor that analyzes notebook cells via LLM + TTS.
+
+    Core pipeline (``analyze()``):
+
+        1. Run pre-assigned tests (if any) — instant pass = skip LLM
+        2. Build prompt with task context + source + error
+        3. Call LLM via OpenAI-compatible API (DeepSeek default)
+        4. Parse response: [SILENT] → praise, otherwise → guiding question
+        5. TTS speaks the question or praise (espeak-ng default)
+
+    All LLM parameters (model, base URL, API key) are read from
+    environment variables on every call — hot-switchable mid-session.
+
+    The module-level ``_watchdog`` singleton is what the IPython magics
+    use.  Create a fresh instance for testing.
+    """
 
     def __init__(self):
         self.task_description: str = ""
@@ -67,8 +108,20 @@ class SocraticWatchdog:
         self.watch_all: bool = False
         """When True, every cell execution is analyzed automatically."""
 
-        self.auto_detect_task: bool = False
-        """When True, detect the task from the markdown cell above each code cell."""
+        self.auto_generate_tests: bool = False
+        """When True, ``%socratic_task`` automatically triggers test generation."""
+
+        self.style: str = "verbose"
+        """Socrates response style: 'verbose' (playful) or 'brief' (direct questions only)."""
+
+        self.exploration_mode: bool = False
+        """When True and no task is set, Socrates encourages free exploration
+        of the current topic instead of asking what the student is trying to do."""
+
+        self._exploration_history: list[dict] = []
+        """Accumulated conversation in exploration mode: each entry is
+        {socrates: str, student_code: str, student_error: str}.  Fed back
+        into the prompt so Socrates can build on previous exchanges."""
 
         self.test_cases: list[str] = []
         """Pre-assigned test cases (e.g. ['assert fib(0) == 0', ...])."""
@@ -93,6 +146,10 @@ class SocraticWatchdog:
         """Wall-clock time of the last ``speak()`` call (seconds), or None."""
         self._debug: bool = os.environ.get("SOCRATIC_DEBUG", "") == "1"
         """When True, prints timing breakdown after each analysis."""
+        self._generate_timings: dict[str, float] = {}
+        """Per-step timings from the last ``generate_tests()`` call."""
+        self._auto_detect_time: Optional[float] = None
+        """Wall-clock time of the last ``_try_auto_detect`` call, or None."""
 
     # ── Public API ──────────────────────────────────────────────────────
 
@@ -102,8 +159,17 @@ class SocraticWatchdog:
         return self.test_cases + self.hidden_test_cases
 
     def set_task(self, description: str) -> None:
-        self.task_description = description.strip()
-        self.auto_detect_task = False  # explicit task overrides auto-detect
+        """Set an explicit task (overrides auto-detection from markdown above).
+        
+        Clears test cases only when the task changes."""
+        new_task = description.strip()
+        task_changed = new_task and new_task != self.task_description
+        self.task_description = new_task
+        if task_changed:
+            self.test_cases = []
+            self.hidden_test_cases = []
+        if self.auto_generate_tests and self.task_description:
+            self.generate_tests()
 
     def set_tests(self, tests_text: str) -> None:
         """Parse and store pre-assigned test cases."""
@@ -120,16 +186,21 @@ class SocraticWatchdog:
 
         **Fast path:** when ``%socratic_tests`` are set and the student's code
         passes all of them, the LLM is skipped entirely — instant silent + confetti.
+
+        Pipeline: tests → prompt → LLM → parse → result
         """
         import time
         t0 = time.monotonic()
         self._timings = {}
 
+        # ── Guard: empty source ──
         if not source.strip():
             self._timings["total"] = 0.0
             return ""
 
-        # ── Fast path: deterministic test check (no LLM) ────────────────
+        # ═════════════════════════════════════════════════════════════════
+        #  PHASE 1 — Fast path: deterministic test check (no LLM)
+        # ═════════════════════════════════════════════════════════════════
         if self._all_test_cases:
             test_result = self._run_tests(source)
             if test_result and "✅ All tests passed" in test_result:
@@ -139,21 +210,57 @@ class SocraticWatchdog:
                     "parse":        0.0,
                     "total":        0.0,
                 }
+                if self._debug:
+                    total = len(self._all_test_cases)
+                    cached = "read" in self._generate_timings
+                    tag = "cached" if cached else "fresh"
+                    if cached:
+                        print(f"📦  {total} tests loaded from cache")
+                    print(f"🧪  {total}/{total} tests passed ⚡  skipping LLM  ({tag})")
+                    for tc in self._all_test_cases:
+                        print(f"     {tc}")
                 return ""  # instant win — confetti, no API call
             # Tests failed — feed failure output to the LLM for better questions
             if test_result:
+                if self._debug:
+                    passed = sum(1 for d in self._test_details if d["status"] == "pass")
+                    failed = sum(1 for d in self._test_details if d["status"] == "fail")
+                    total = passed + failed
+                    cached = "read" in self._generate_timings
+                    tag = "cached" if cached else "fresh"
+                    if cached:
+                        print(f"📦  {total} tests loaded from cache")
+                    print(f"🧪  {passed}/{total} passed, {failed} failed — sending to LLM  ({tag})")
+                    for d in self._test_details:
+                        if d["status"] == "pass":
+                            print(f"     ✅ {d['test']}")
+                        else:
+                            print(f"     ❌ {d['test']}  →  {d.get('error', '')}")
                 if error:
                     error = error + "\n\n" + test_result
                 else:
                     error = test_result
 
+        # ═════════════════════════════════════════════════════════════════
+        #  PHASE 2 — Build prompt with task + source + error context
+        # ═════════════════════════════════════════════════════════════════
         t1 = time.monotonic()
         prompt = self._build_prompt(source, error)
         t2 = time.monotonic()
 
+        # ═════════════════════════════════════════════════════════════════
+        #  PHASE 3 — LLM call (OpenAI-compatible HTTPS POST)
+        # ═════════════════════════════════════════════════════════════════
         raw = self._call_llm(prompt)
         t3 = time.monotonic()
 
+        if self._debug:
+            model = os.environ.get("SOCRATIC_LLM_MODEL", "deepseek-chat")
+            print(f"🤖  LLM: {model}  →  {round(t3 - t2, 3)}s")
+
+        # ═════════════════════════════════════════════════════════════════
+        #  PHASE 4 — Parse: extract question or detect [SILENT]
+        # ═════════════════════════════════════════════════════════════════
         result = self._parse_response(raw)
         t4 = time.monotonic()
 
@@ -164,22 +271,15 @@ class SocraticWatchdog:
             "total":        round(t4 - t1, 3),
         }
 
-        if self._debug:
-            print(self._format_timings())
+        # ── Record exchange in exploration conversation ──
+        if self.exploration_mode and source.strip():
+            self._exploration_history.append({
+                "socrates": result or "[SILENT — praised]",
+                "student_code": source.strip(),
+                "student_error": error.strip() if error else "",
+            })
 
         return result
-
-    def _format_timings(self) -> str:
-        """Return a one-line timing summary of the last analysis."""
-        if not self._timings:
-            return ""
-        t = self._timings
-        return (
-            f"⏱  build={t['build_prompt']}s  "
-            f"llm={t['llm_call']}s  "
-            f"parse={t['parse']}s  "
-            f"total={t['total']}s"
-        )
 
     def speak(self, text: str) -> Optional["IPython.display.Audio"]:
         """Convert text to speech. Returns Audio widget or None on failure.
@@ -196,7 +296,7 @@ class SocraticWatchdog:
         if not text.strip():
             return None
         t0 = time.monotonic()
-        backend = os.environ.get("SOCRATIC_TTS_BACKEND", "edge-tts")
+        backend = os.environ.get("SOCRATIC_TTS_BACKEND", "espeak")
         if backend == "espeak":
             result = self._speak_espeak(text)
         elif backend == "kokoro":
@@ -204,6 +304,8 @@ class SocraticWatchdog:
         else:
             result = self._speak_edge(text)
         self._tts_time = round(time.monotonic() - t0, 3)
+        if self._debug and result is not None:
+            print(f"🔊  TTS: {backend}  →  {self._tts_time}s")
         return result
 
     def _speak_edge(self, text: str) -> Optional["IPython.display.Audio"]:
@@ -264,95 +366,213 @@ class SocraticWatchdog:
     def reset_context(self) -> None:
         """Reset task description, test cases, and cached notebook data."""
         self.task_description = ""
-        self.auto_detect_task = False
         self.test_cases = []
         self.hidden_test_cases = []
         self._cached_notebook_path = ""
         self._cached_notebook_cells = []
+        self._exploration_history = []
+
+    def peek_cache(self, task_description: str = "") -> dict | None:
+        """Return the cached test data for a task, or None if not cached.
+
+        Returns ``{task, tests, hash, age_seconds}`` so callers can display
+        the content without loading it into ``hidden_test_cases``.
+        """
+        import hashlib, time as _time
+        task = (task_description or self.task_description).strip()
+        if not task:
+            return None
+        cache_key = hashlib.sha256(task.encode()).hexdigest()[:16]
+        cache_file = self._tests_cache_dir / f"{cache_key}.json"
+        if not cache_file.exists():
+            return None
+        try:
+            cached = json.loads(cache_file.read_text())
+            return {
+                "task": cached.get("task", task),
+                "tests": cached.get("tests", []),
+                "hash": cache_key,
+                "age_seconds": round(_time.time() - cache_file.stat().st_mtime),
+            }
+        except Exception:
+            return None
+
+    def list_cache(self) -> list[dict]:
+        """Return a list of all cached test entries.
+
+        Each entry: ``{task, tests, hash, age_seconds, test_count}``.
+        Sorted newest-first.
+        """
+        import time as _time
+        entries = []
+        if not self._tests_cache_dir.exists():
+            return entries
+        for cache_file in sorted(
+            self._tests_cache_dir.glob("*.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        ):
+            try:
+                cached = json.loads(cache_file.read_text())
+                entries.append({
+                    "task": cached.get("task", ""),
+                    "tests": cached.get("tests", []),
+                    "hash": cache_file.stem,
+                    "age_seconds": round(_time.time() - cache_file.stat().st_mtime),
+                    "test_count": len(cached.get("tests", [])),
+                })
+            except Exception:
+                pass
+        return entries
 
     def generate_tests(self, task_description: str = "") -> list[str]:
         """Generate hidden test cases from the task description via LLM.
 
         Results are cached on disk (keyed by task description hash) so the
         LLM is called only once per task.  Returns the test case lines.
+
+        Populates ``self._generate_timings`` with per-step wall-clock times
+        (printed when ``self._debug`` is True).
         """
-        import hashlib
+        import hashlib, time as _time
+        t0 = _time.monotonic()
+        self._generate_timings = {}
 
         task = (task_description or self.task_description).strip()
         if not task:
             print("🧠  No task set — can't generate tests. Use %socratic_task first.")
+            self._generate_timings["total"] = 0.0
             return []
 
+        # ── Hash + cache path ──
         cache_key = hashlib.sha256(task.encode()).hexdigest()[:16]
         self._tests_cache_dir.mkdir(parents=True, exist_ok=True)
         cache_file = self._tests_cache_dir / f"{cache_key}.json"
+        t1 = _time.monotonic()
+
+        # ── Cache lookup ──
+        hit = cache_file.exists()
+        t2 = _time.monotonic()
 
         # ── Cache hit ──
-        if cache_file.exists():
+        if hit:
             try:
                 cached = json.loads(cache_file.read_text())
                 self.hidden_test_cases = cached.get("tests", [])
+                t3 = _time.monotonic()
+
+                self._generate_timings = {
+                    "setup":   round(t1 - t0, 4),
+                    "lookup":  round(t2 - t1, 4),
+                    "read":    round(t3 - t2, 4),
+                    "total":   round(t3 - t0, 4),
+                }
+
                 print(f"🧠  Loaded {len(self.hidden_test_cases)} cached hidden tests for this task.")
+                if self._debug:
+                    for tc in self.hidden_test_cases:
+                        print(f"     {tc}")
                 return self.hidden_test_cases
             except Exception:
                 pass  # corrupt cache → regenerate
 
         # ── Cache miss — ask LLM ──
         gen_prompt = textwrap.dedent(f"""\
-            You are a test-case generator for a programming exercise.
+            You are a test-case generator for a beginner programming exercise.
 
             TASK: {task}
 
-            Write 4-6 Python assert statements that thoroughly test a correct
-            solution.  Cover edge cases, normal cases, and corner cases.
+            Write 4-6 Python assert statements that test whether a correct
+            solution works.  Use ONLY small integers (-10 to 100).
+            Test the basic logic — normal inputs, zero, and one negative input.
+            Do NOT test floating-point numbers, large values, or edge cases
+            that a beginner would not think about.
+
             Output ONLY the assert statements, one per line — no markdown,
             no explanations, no code fences.
 
             Example format:
-            assert foo(0) == 0
-            assert foo(-1) == 1
-            assert foo(100) == 5050
+            assert greet("Alice") == "Hello, Alice"
+            assert greet("") == "Hello, "
+            assert greet("Bob") == "Hello, Bob"
         """)
 
+        t_llm_start = _time.monotonic()
         try:
-            raw = self._call_llm_direct(gen_prompt)
-            if raw == "[SILENT]":
-                # Direct API failed, try hermes
-                raw = self._call_llm_hermes(gen_prompt)
+            raw = self._call_llm(gen_prompt)
             if raw == "[SILENT]":
                 print("⚠️  Could not generate tests (LLM unavailable).")
+                self._generate_timings = {
+                    "setup": round(t1 - t0, 4),
+                    "lookup": round(t2 - t1, 4),
+                    "llm_err": round(_time.monotonic() - t_llm_start, 4),
+                    "total": round(_time.monotonic() - t0, 4),
+                }
                 return []
         except Exception:
             print("⚠️  Could not generate tests (LLM error).")
+            self._generate_timings = {
+                "setup": round(t1 - t0, 4),
+                "lookup": round(t2 - t1, 4),
+                "llm_err": round(_time.monotonic() - t_llm_start, 4),
+                "total": round(_time.monotonic() - t0, 4),
+            }
             return []
+        t_llm_end = _time.monotonic()
 
-        # Parse: keep only assert lines
+        # ── Parse: keep only assert lines ──
         tests = []
         for line in raw.split("\n"):
             stripped = line.strip()
             if stripped.startswith("assert ") and not stripped.startswith("assert ("):
-                # Single-line assert
                 tests.append(stripped)
             elif stripped.startswith("assert "):
-                # Multi-line assert — already starts with assert, keep it
                 tests.append(stripped)
+        t_parse_end = _time.monotonic()
 
         if not tests:
             print("⚠️  LLM returned no parseable assert statements.")
+            self._generate_timings = {
+                "setup":   round(t1 - t0, 4),
+                "lookup":  round(t2 - t1, 4),
+                "llm":     round(t_llm_end - t_llm_start, 4),
+                "parse":   round(t_parse_end - t_llm_end, 4),
+                "total":   round(t_parse_end - t0, 4),
+            }
             return []
 
-        # Cache
+        # ── Cache write ──
         cache_file.write_text(json.dumps({"task": task, "tests": tests}, indent=2))
         self.hidden_test_cases = tests
+        t_write_end = _time.monotonic()
+
+        self._generate_timings = {
+            "setup":   round(t1 - t0, 4),
+            "lookup":  round(t2 - t1, 4),
+            "llm":     round(t_llm_end - t_llm_start, 4),
+            "parse":   round(t_parse_end - t_llm_end, 4),
+            "write":   round(t_write_end - t_parse_end, 4),
+            "total":   round(t_write_end - t0, 4),
+        }
+
         print(f"🧠  Generated and cached {len(tests)} hidden tests for this task.")
+        if self._debug:
+            for tc in tests:
+                print(f"     {tc}")
         return tests
 
     def detect_task_from_notebook(self, current_source: str) -> Optional[str]:
         """Try to find the markdown cell just above the current code cell.
 
+        Only returns text if the markdown contains a task-trigger word
+        (e.g. "Task", "Exercise", "Write a function").  This prevents
+        unrelated markdown (headings, notes) from being treated as a task.
+
         Uses ``jupyter-mcp-cli`` if available (DIVE platform), otherwise
         returns ``None``.
         """
+        _TRIGGERS = ["task"]
+
         try:
             cells = self._get_notebook_cells()
             if not cells:
@@ -369,6 +589,10 @@ class SocraticWatchdog:
                 text = "".join(cell_above.get("source", []))
                 # Skip very short cells (titles, dividers)
                 if len(text.strip()) > 30:
+                    # Must contain a task-trigger word
+                    text_lower = text.lower()
+                    if not any(t in text_lower for t in _TRIGGERS):
+                        return None
                     # Clean up: remove HTML comments, strip whitespace
                     text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
                     return text.strip()
@@ -376,23 +600,27 @@ class SocraticWatchdog:
             pass
         return None
 
-    # ── Internals ───────────────────────────────────────────────────────
+    def _get_system_prompt(self) -> str:
+        """Return the Socratic system prompt based on the current style."""
+        if self.style == "brief":
+            return SOCRATIC_RULES_BRIEF
+        return SOCRATIC_RULES
 
     def _resolve_task(self, source: str) -> str:
         """Return the best task description available for this cell.
 
-        Priority: explicit task > auto-detected > empty.
+        Always tries auto-detection from the markdown cell above.
+        Explicit %socratic_task overrides auto-detection.
         """
         if self.task_description:
             return self.task_description
-        if self.auto_detect_task:
-            detected = self.detect_task_from_notebook(source)
-            if detected:
-                return detected
+        detected = self.detect_task_from_notebook(source)
+        if detected:
+            return detected
         return ""
 
     def _build_prompt(self, source: str, error: str = "") -> str:
-        parts = [SOCRATIC_RULES, ""]
+        parts = [self._get_system_prompt(), ""]
 
         # Task context (explicit or auto-detected)
         task = self._resolve_task(source)
@@ -429,6 +657,33 @@ class SocraticWatchdog:
             parts.append(error.strip())
             parts.append("```")
 
+        # ── Exploration mode (no task, student is experimenting) ──
+        task = self._resolve_task(source)
+        if not task and self.exploration_mode:
+            # Include recent conversation history so Socrates builds on it
+            if self._exploration_history:
+                parts.append("")
+                parts.append("Recent conversation (Socrates and the student):")
+                for entry in self._exploration_history[-5:]:  # last 5 exchanges
+                    parts.append(f"Socrates: {entry['socrates']}")
+                    parts.append("Student ran:\n```python\n" + entry['student_code'] + "\n```")
+                    if entry.get('student_error'):
+                        parts.append(f"Error: {entry['student_error']}")
+                parts.append("")
+
+            parts.append(
+                "EXPLORATION MODE: The student has NO specific task — they are "
+                "freely exploring and experimenting.  Do NOT ask abstract "
+                "philosophical questions about 'the nature of' anything.  "
+                "Do NOT ask what they are 'supposed' to do.  "
+                "Give ONE concrete, actionable suggestion: 'Try adding X', "
+                "'What happens if you call .Y()?', 'Delete Z and see what changes', "
+                "'Can you combine this with ...?', 'What if you used a loop here?'.  "
+                "Be a lab partner: playful, curious, and always pointing at "
+                "something specific in their code they can actually DO next."
+            )
+            parts.append("")
+
         parts.append("")
         parts.append(
             "DECISION (read carefully):\n"
@@ -443,45 +698,19 @@ class SocraticWatchdog:
         return "\n".join(parts)
 
     def _call_llm(self, prompt: str) -> str:
-        """Call LLM to analyze student code.
+        """Call the LLM API to analyze student code.
 
-        Priority: direct API (faster, more reliable) → hermes CLI fallback.
-        Controlled by ``SOCRATIC_LLM_BACKEND`` env var:
-        - ``direct`` (default) — calls DeepSeek/OpenAI API directly via HTTPS
-        - ``hermes`` — uses ``hermes chat -q`` CLI
+        Sends ``prompt`` to the OpenAI-compatible chat completions endpoint.
+        No subprocess, no CLI — a straightforward HTTPS POST.
+
+        Returns the model's message content, or ``"[SILENT]"`` on failure.
+
+        Environment variables (checked in order, first wins):
+
+        * **Model**: SOCRATIC_LLM_MODEL → OPENAI_MODEL → ``deepseek-chat``
+        * **Base URL**: SOCRATIC_LLM_BASE_URL → OPENAI_BASE_URL → ``https://api.deepseek.com``
+        * **API Key**: SOCRATIC_LLM_API_KEY → DEEPSEEK_API_KEY → OPENAI_API_KEY
         """
-        backend = os.environ.get("SOCRATIC_LLM_BACKEND", "direct")
-
-        if backend == "hermes":
-            # Hermes CLI first, direct API fallback
-            result = self._call_llm_hermes(prompt)
-            if result == "[SILENT]":
-                return self._call_llm_direct(prompt)
-            return result
-
-        # Default: direct API — faster, no hermes overhead
-        result = self._call_llm_direct(prompt)
-        if result == "[SILENT]":
-            # Direct API failed (no key, network error) — try hermes as fallback
-            return self._call_llm_hermes(prompt)
-        return result
-
-    def _call_llm_hermes(self, prompt: str) -> str:
-        """LLM via Hermes CLI (``hermes chat -q``)."""
-        try:
-            # Use HERMES_PROFILE env var, or default to 'dev'
-            profile = os.environ.get("HERMES_PROFILE", "dev")
-            result = subprocess.run(
-                ["hermes", "chat", "-q", prompt, "--safe-mode", "-p", profile],
-                capture_output=True, text=True, timeout=LLM_TIMEOUT,
-            )
-            return (result.stdout or result.stderr or "")
-        except FileNotFoundError:
-            return "[SILENT]"
-        except subprocess.TimeoutExpired:
-            return "[SILENT]"
-
-    def _call_llm_direct(self, prompt: str) -> str:
         try:
             import json as _json
             import urllib.request as _req
@@ -506,7 +735,7 @@ class SocraticWatchdog:
             body = _json.dumps({
                 "model": model,
                 "messages": [
-                    {"role": "system", "content": SOCRATIC_RULES},
+                    {"role": "system", "content": self._get_system_prompt()},
                     {"role": "user", "content": prompt},
                 ],
                 "max_tokens": 200,
@@ -526,29 +755,20 @@ class SocraticWatchdog:
             return "[SILENT]"
 
     def _parse_response(self, raw: str) -> str:
-        # Hermes echoes the full prompt in its output, which includes [SILENT]
-        # in the Socratic rules. Only look at the actual response body.
-        # Split on the "───" separator that hermes prints before the response.
-        if "───" in raw:
-            raw = raw.split("───", 1)[1]
+        """Extract the Socratic question from the LLM response.
 
+        The LLM returns either a single question line or ``[SILENT]``
+        when the code is correct.  Since we call the API directly, the
+        response is clean message content — no CLI metadata to filter.
+        """
         if "[SILENT]" in raw.upper():
             return ""
-        cleaned = re.sub(r"[╭─╮│╰─╯┌┐└┘├┤┬┴┼━│☰●]", "", raw)
-        lines = []
-        for line in cleaned.split("\n"):
+        # Take the last non-empty line as the question
+        for line in reversed(raw.strip().split("\n")):
             stripped = line.strip()
-            if not stripped:
-                continue
-            if any(skip in stripped.lower() for skip in
-                   ["resume this session", "session:", "duration:",
-                    "messages:", "tool call", "running", "thinking",
-                    "hermes", "system", "tool", "safe mode", "notice"]):
-                continue
-            lines.append(stripped)
-        if not lines:
-            return ""
-        return lines[-1].strip().strip('"').strip("'")
+            if stripped:
+                return stripped.strip('"').strip("'")
+        return ""
 
     # ── Notebook introspection (jupyter-mcp-cli) ────────────────────────
 
@@ -588,6 +808,10 @@ class SocraticWatchdog:
         """Find the index of the current code cell in the notebook cell list.
 
         Matches by source content similarity.
+
+        IPython strips the cell magic line (%%socratic) from the source
+        handed to the magic, but jupyter-mcp-cli returns the FULL cell
+        source.  We strip magic lines here so exact matching works.
         """
         current_normalized = current_source.strip()
         best_idx = None
@@ -596,7 +820,11 @@ class SocraticWatchdog:
         for idx, cell in enumerate(cells):
             if cell.get("cell_type") != "code":
                 continue
-            cell_source = "".join(cell.get("source", [])).strip()
+            cell_source_raw = "".join(cell.get("source", [])).strip()
+            # Strip cell/line magic prefix lines for fair comparison
+            cell_source = re.sub(
+                r'^(%%.*|%.*)\n', '', cell_source_raw, flags=re.MULTILINE
+            ).strip()
             # Exact match
             if cell_source == current_normalized:
                 return idx
@@ -619,32 +847,45 @@ class SocraticWatchdog:
         """Run pre-assigned test cases against the student's code.
 
         Returns test results text, or empty string if tests can't be run.
+        Populates ``self._test_details`` with per-test pass/fail info for debug.
         """
         all_tests = self._all_test_cases
         if not all_tests:
             return ""
 
-        try:
-            # Build a test script: student's code + test cases
-            script = source.rstrip() + "\n\n"
-            for tc in all_tests:
-                script += tc + "\n"
-            script += "\nprint('ALL_TESTS_PASSED')\n"
+        self._test_details: list[dict] = []
+        passed = 0
+        failed = 0
 
-            result = subprocess.run(
-                ["python3", "-c", script],
-                capture_output=True, text=True, timeout=10,
-            )
-            if "ALL_TESTS_PASSED" in result.stdout:
+        try:
+            for tc in all_tests:
+                script = source.rstrip() + "\n\n" + tc + "\n"
+                result = subprocess.run(
+                    ["python3", "-c", script],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if result.returncode == 0:
+                    passed += 1
+                    self._test_details.append({"test": tc, "status": "pass"})
+                else:
+                    failed += 1
+                    err = (result.stderr or result.stdout).strip()
+                    # Extract the last meaningful line (AssertionError, NameError, etc.)
+                    err_lines = err.split("\n")
+                    last = err_lines[-1].strip() if err_lines else str(result.returncode)
+                    self._test_details.append({"test": tc, "status": "fail", "error": last})
+
+            if failed == 0:
                 return "✅ All tests passed"
             else:
-                # Return the error output
-                err = (result.stderr or result.stdout).strip()
-                if err:
-                    # Truncate long tracebacks
-                    lines = err.split("\n")
-                    return "\n".join(lines[-8:])
-                return ""
+                # Build a summary string for the LLM prompt
+                lines = [f"{passed}/{len(all_tests)} passed, {failed} failed:"]
+                for d in self._test_details:
+                    if d["status"] == "pass":
+                        lines.append(f"  ✅ {d['test']}")
+                    else:
+                        lines.append(f"  ❌ {d['test']}  →  {d.get('error', '')}")
+                return "\n".join(lines)
         except Exception:
             return ""
 
