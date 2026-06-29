@@ -1,0 +1,8 @@
+name: socratic-watchdog
+stage: playground
+kind: personal
+purpose: "Socratic TTS coding assistant — IPython cell magic that watches Jupyter notebook cells and speaks guiding questions via the Socratic method."
+owner: xmzr
+created: 2026-06-29
+history:
+  - { stage: playground, date: 2026-06-29 }
