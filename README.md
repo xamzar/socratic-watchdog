@@ -6,12 +6,16 @@ stage: playground
 ---
 # 🧠 Socratic Watchdog
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/xamzar/socratic-watchdog/blob/main/demo_colab.ipynb)
+
 A Socratic TTS coding assistant that watches your Jupyter notebook cells,
 analyzes them through the lens of the Socratic method, and **speaks guiding
 questions** when you go off-track. Stays silent when your code is correct —
 and celebrates with confetti when you get it right.
 
 > *"I cannot teach anybody anything, I can only make them think."* — Socrates
+
+**▶️ Try it live:** [open the demo in Google Colab](https://colab.research.google.com/github/xamzar/socratic-watchdog/blob/main/demo_colab.ipynb) — no install, runs in your browser.
 
 ## Features
 
