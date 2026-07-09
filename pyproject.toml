@@ -29,7 +29,7 @@ classifiers = [
 ]
 keywords = ["jupyter", "socratic", "tts", "education", "teaching", "coding", "mentor"]
 dependencies = [
-    "ipython>=8.0.0",
+    "ipython>=7.16",
 ]
 
 [project.optional-dependencies]
