@@ -22,9 +22,12 @@ from typing import Optional
 # ═══════════════════════════════════════════════════════════════════════════
 
 TTS_VOICE = os.environ.get("SOCRATIC_TTS_VOICE", "en-US-AndrewNeural")
-TTS_BACKEND = os.environ.get("SOCRATIC_TTS_BACKEND", "espeak")
-# ^ "espeak" (default, local, ~0.02s warm, robotic), "kokoro" (local neural, ~3.8s),
-#   or "edge-tts" (cloud neural, ~1s)
+# espeak is the current default while iterating (fast, local, ~0.02s warm,
+# robotic). edge-tts (cloud neural, ~1s) is the planned default; espeak then
+# stays as the offline fallback. kokoro (local neural, ~3.8s) is also available.
+# Flip this one constant to change the project-wide default.
+DEFAULT_TTS_BACKEND = "espeak"
+TTS_BACKEND = os.environ.get("SOCRATIC_TTS_BACKEND", DEFAULT_TTS_BACKEND)
 KOKORO_VOICE = os.environ.get("SOCRATIC_KOKORO_VOICE", "af_heart")
 # ^ Kokoro voice pack — "af_heart" (default, female), "am_adam", "bm_lewis", etc.
 LLM_TIMEOUT = int(os.environ.get("SOCRATIC_LLM_TIMEOUT", "30"))
@@ -76,6 +79,15 @@ SOCRATIC_RULES_BRIEF = textwrap.dedent("""\
     question.  Just the question.  Example: "Why did you choose subtraction
     instead of addition?"  Not "Ah, I see you've used subtraction. Let me
     ask: why did you choose that?"
+""")
+
+# System prompt for the test-case generator.  The Socratic rules MUST NOT be
+# used here — they tell the model to refuse to write code and to respond
+# [SILENT], which directly sabotages test generation.
+TEST_GEN_SYSTEM = textwrap.dedent("""\
+    You are a precise Python test-case generator for beginner exercises.
+    Output ONLY valid Python `assert` statements, one per line — no prose,
+    no markdown, no code fences.
 """)
 
 
@@ -214,8 +226,6 @@ class SocraticWatchdog:
                     total = len(self._all_test_cases)
                     cached = "read" in self._generate_timings
                     tag = "cached" if cached else "fresh"
-                    if cached:
-                        print(f"📦  {total} tests loaded from cache")
                     print(f"🧪  {total}/{total} tests passed ⚡  skipping LLM  ({tag})")
                     for tc in self._all_test_cases:
                         print(f"     {tc}")
@@ -228,8 +238,6 @@ class SocraticWatchdog:
                     total = passed + failed
                     cached = "read" in self._generate_timings
                     tag = "cached" if cached else "fresh"
-                    if cached:
-                        print(f"📦  {total} tests loaded from cache")
                     print(f"🧪  {passed}/{total} passed, {failed} failed — sending to LLM  ({tag})")
                     for d in self._test_details:
                         if d["status"] == "pass":
@@ -246,15 +254,22 @@ class SocraticWatchdog:
         # ═════════════════════════════════════════════════════════════════
         t1 = time.monotonic()
 
-        # Skip LLM entirely if no API key is configured AND no test cases
-        # were set — we can't verify correctness, so don't give false praise.
-        if not self._all_test_cases and not self._has_api_key():
+        # No API key → we can't ask Socrates a question.  But we may still
+        # have a deterministic verdict from the tests, so branch carefully:
+        #   • tests ran and FAILED → say so plainly (never praise broken code)
+        #   • no tests at all       → we genuinely can't verify
+        # (All-tests-passed already returned "" above with confetti.)
+        if not self._has_api_key():
             self._timings = {
                 "build_prompt": 0.0,
                 "llm_call":     0.0,
                 "parse":        0.0,
                 "total":        0.0,
             }
+            if self._all_test_cases:
+                if self._debug:
+                    print("⚠️  Tests failed and no LLM — reporting failure, not asking a question")
+                return "[TESTS_FAILED]"
             if self._debug:
                 print("⚠️  LLM unavailable — no API key configured, no test cases set")
             return "[LLM_UNAVAILABLE]"
@@ -299,9 +314,9 @@ class SocraticWatchdog:
         """Convert text to speech. Returns Audio widget or None on failure.
 
         Backend is selected by ``SOCRATIC_TTS_BACKEND`` env var (read on each call):
-        - ``edge-tts`` (default) — Microsoft neural voices, cloud, ~3s
+        - ``espeak`` (current default) — local espeak-ng, robotic, ~0.03s, no network
+        - ``edge-tts`` — Microsoft neural voices, cloud, ~3s (planned default)
         - ``kokoro`` — local neural, ~3.8s, 82M model
-        - ``espeak`` — local espeak-ng, robotic, ~0.03s, no network
 
         Records wall-clock time in ``self._tts_time``.
         """
@@ -310,7 +325,7 @@ class SocraticWatchdog:
         if not text.strip():
             return None
         t0 = time.monotonic()
-        backend = os.environ.get("SOCRATIC_TTS_BACKEND", "espeak")
+        backend = os.environ.get("SOCRATIC_TTS_BACKEND", DEFAULT_TTS_BACKEND)
         if backend == "espeak":
             result = self._speak_espeak(text)
         elif backend == "kokoro":
@@ -439,14 +454,15 @@ class SocraticWatchdog:
                 pass
         return entries
 
-    def generate_tests(self, task_description: str = "") -> list[str]:
+    def generate_tests(self, task_description: str = "", quiet: bool = False) -> list[str]:
         """Generate hidden test cases from the task description via LLM.
 
         Results are cached on disk (keyed by task description hash) so the
         LLM is called only once per task.  Returns the test case lines.
 
         Populates ``self._generate_timings`` with per-step wall-clock times
-        (printed when ``self._debug`` is True).
+        (printed when ``self._debug`` is True).  Pass ``quiet=True`` to
+        suppress the status prints (caller emits its own indicator).
         """
         import hashlib, time as _time
         t0 = _time.monotonic()
@@ -454,7 +470,8 @@ class SocraticWatchdog:
 
         task = (task_description or self.task_description).strip()
         if not task:
-            print("🧠  No task set — can't generate tests. Use %socratic_task first.")
+            if not quiet:
+                print("🧠  No task set — can't generate tests. Use %socratic_task first.")
             self._generate_timings["total"] = 0.0
             return []
 
@@ -482,8 +499,9 @@ class SocraticWatchdog:
                     "total":   round(t3 - t0, 4),
                 }
 
-                print(f"🧠  Loaded {len(self.hidden_test_cases)} cached hidden tests for this task.")
-                if self._debug:
+                if not quiet:
+                    print(f"🧠  Loaded {len(self.hidden_test_cases)} cached hidden tests for this task.")
+                if self._debug and not quiet:
                     for tc in self.hidden_test_cases:
                         print(f"     {tc}")
                 return self.hidden_test_cases
@@ -513,9 +531,10 @@ class SocraticWatchdog:
 
         t_llm_start = _time.monotonic()
         try:
-            raw = self._call_llm(gen_prompt)
+            raw = self._call_llm(gen_prompt, system=TEST_GEN_SYSTEM)
             if raw == "[SILENT]":
-                print("⚠️  Could not generate tests (LLM unavailable).")
+                if not quiet:
+                    print("⚠️  Could not generate tests (LLM unavailable).")
                 self._generate_timings = {
                     "setup": round(t1 - t0, 4),
                     "lookup": round(t2 - t1, 4),
@@ -524,7 +543,8 @@ class SocraticWatchdog:
                 }
                 return []
         except Exception:
-            print("⚠️  Could not generate tests (LLM error).")
+            if not quiet:
+                print("⚠️  Could not generate tests (LLM error).")
             self._generate_timings = {
                 "setup": round(t1 - t0, 4),
                 "lookup": round(t2 - t1, 4),
@@ -538,14 +558,13 @@ class SocraticWatchdog:
         tests = []
         for line in raw.split("\n"):
             stripped = line.strip()
-            if stripped.startswith("assert ") and not stripped.startswith("assert ("):
-                tests.append(stripped)
-            elif stripped.startswith("assert "):
+            if stripped.startswith("assert "):
                 tests.append(stripped)
         t_parse_end = _time.monotonic()
 
         if not tests:
-            print("⚠️  LLM returned no parseable assert statements.")
+            if not quiet:
+                print("⚠️  LLM returned no parseable assert statements.")
             self._generate_timings = {
                 "setup":   round(t1 - t0, 4),
                 "lookup":  round(t2 - t1, 4),
@@ -569,8 +588,9 @@ class SocraticWatchdog:
             "total":   round(t_write_end - t0, 4),
         }
 
-        print(f"🧠  Generated and cached {len(tests)} hidden tests for this task.")
-        if self._debug:
+        if not quiet:
+            print(f"🧠  Generated and cached {len(tests)} hidden tests for this task.")
+        if self._debug and not quiet:
             for tc in tests:
                 print(f"     {tc}")
         return tests
@@ -593,11 +613,13 @@ class SocraticWatchdog:
         except Exception:
             return None
 
-    def _cache_tests(self, task: str, tests: list[str], source: str = "manual") -> None:
+    def _cache_tests(self, task: str, tests: list[str], source: str = "manual",
+                     quiet: bool = False) -> None:
         """Write tests to the on-disk cache, keyed by task hash.
 
         ``source`` is a label for debugging: ``"manual"`` for human-written
-        tests, ``"generated"`` for AI-generated.
+        tests, ``"generated"`` for AI-generated.  Pass ``quiet=True`` to
+        suppress the confirmation print (caller emits its own indicator).
         """
         import hashlib
         cache_key = hashlib.sha256(task.strip().encode()).hexdigest()[:16]
@@ -608,7 +630,8 @@ class SocraticWatchdog:
             "tests": tests,
             "source": source,
         }, indent=2))
-        print(f"🧠  Cached {len(tests)} {source} tests for this task.")
+        if not quiet:
+            print(f"🧠  Cached {len(tests)} {source} tests for this task.")
 
     def detect_task_from_notebook(self, current_source: str) -> Optional[str]:
         """Try to find the markdown cell just above the current code cell.
@@ -632,9 +655,21 @@ class SocraticWatchdog:
             if current_idx is None or current_idx == 0:
                 return None
 
-            # Look at the cell directly above
-            cell_above = cells[current_idx - 1]
-            if cell_above.get("cell_type") == "markdown":
+            # Scan upward for the task markdown, skipping helper cells
+            # (pure-magic / blank code) but stopping at real code.
+            cell_above = None
+            j = current_idx - 1
+            while j >= 0:
+                prev = cells[j]
+                if prev.get("cell_type") == "markdown":
+                    cell_above = prev
+                    break
+                prev_src = "".join(prev.get("source", []))
+                if any(ln.strip() and not ln.strip().startswith(("%", "!"))
+                       for ln in prev_src.splitlines()):
+                    break
+                j -= 1
+            if cell_above is not None and cell_above.get("cell_type") == "markdown":
                 text = "".join(cell_above.get("source", []))
                 # Skip very short cells (titles, dividers)
                 if len(text.strip()) > 30:
@@ -669,7 +704,9 @@ class SocraticWatchdog:
         return ""
 
     def _build_prompt(self, source: str, error: str = "") -> str:
-        parts = [self._get_system_prompt(), ""]
+        # The Socratic system rules are sent via the system role in
+        # _call_llm — don't duplicate them in the user content here.
+        parts: list[str] = []
 
         # Task context (explicit or auto-detected)
         task = self._resolve_task(source)
@@ -754,11 +791,15 @@ class SocraticWatchdog:
             or os.environ.get("OPENAI_API_KEY")
         )
 
-    def _call_llm(self, prompt: str) -> str:
+    def _call_llm(self, prompt: str, system: Optional[str] = None) -> str:
         """Call the LLM API to analyze student code.
 
         Sends ``prompt`` to the OpenAI-compatible chat completions endpoint.
         No subprocess, no CLI — a straightforward HTTPS POST.
+
+        ``system`` overrides the system-role message; defaults to the Socratic
+        rules.  Callers that are NOT doing Socratic analysis (e.g. test-case
+        generation) must pass their own neutral system prompt.
 
         Returns the model's message content, or ``"[SILENT]"`` on failure.
 
@@ -792,7 +833,7 @@ class SocraticWatchdog:
             body = _json.dumps({
                 "model": model,
                 "messages": [
-                    {"role": "system", "content": self._get_system_prompt()},
+                    {"role": "system", "content": system or self._get_system_prompt()},
                     {"role": "user", "content": prompt},
                 ],
                 "max_tokens": 200,

@@ -111,8 +111,10 @@ class TestResolveTask:
 # ── _build_prompt ────────────────────────────────────────────────────────────
 
 class TestBuildPrompt:
-    def test_includes_socratic_rules(self, watchdog):
-        prompt = watchdog._build_prompt("x = 1")
+    def test_system_prompt_carries_socratic_rules(self, watchdog):
+        # The rules ride on the system role (see _call_llm), not the user
+        # content built by _build_prompt.
+        prompt = watchdog._get_system_prompt()
         assert "You are Socrates" in prompt
         assert "NEVER give a direct answer" in prompt
 
@@ -148,10 +150,9 @@ class TestBuildPrompt:
 
     def test_brief_style_uses_brief_prompt(self, watchdog):
         watchdog.style = "brief"
-        prompt = watchdog._build_prompt("x = 1")
+        prompt = watchdog._get_system_prompt()
         assert "BE DIRECT" in prompt.upper()
         assert "patient, curious" not in prompt
-        # empty source is still included, just empty block
 
 
 # ── _parse_response ──────────────────────────────────────────────────────────
@@ -221,6 +222,16 @@ class TestAnalyze:
             result = watchdog.analyze("def add(a, b): return a + b")
             assert result == ""  # silent = all tests passed
 
+    def test_analyze_failing_tests_no_api_key_does_not_praise(self, watchdog):
+        """Failing tests + no LLM must report failure, never false praise.
+
+        Regression: previously _call_llm returned [SILENT] without a key,
+        which parsed to "" (praise) — so broken code got confetti."""
+        watchdog.set_tests("assert add(1, 2) == 3")  # source returns wrong answer
+        with mock.patch.object(watchdog, "_has_api_key", return_value=False):
+            result = watchdog.analyze("def add(a, b): return a - b")
+            assert result == "[TESTS_FAILED]"
+
 
 # ── _run_tests ───────────────────────────────────────────────────────────────
 
@@ -256,6 +267,27 @@ class TestCallLLM:
         with mock.patch.dict("os.environ", {}, clear=True):
             result = watchdog._call_llm("test prompt")
             assert result == "[SILENT]"
+
+
+# ── generate_tests ───────────────────────────────────────────────────────────
+
+class TestGenerateTests:
+    def test_uses_neutral_system_prompt_not_socratic_rules(self, watchdog, tmp_path):
+        """Test generation must NOT send the Socratic rules — they tell the
+        model to refuse code and respond [SILENT], sabotaging generation."""
+        watchdog._tests_cache_dir = tmp_path
+        watchdog.set_task("Write a function add(a, b) that returns a + b")
+        with mock.patch.object(
+            watchdog, "_call_llm",
+            return_value="assert add(1, 2) == 3\nassert add(0, 0) == 0",
+        ) as mock_llm:
+            tests = watchdog.generate_tests()
+
+        assert tests == ["assert add(1, 2) == 3", "assert add(0, 0) == 0"]
+        # The generation call must pass an explicit, non-Socratic system prompt.
+        _, kwargs = mock_llm.call_args
+        assert "Socrates" not in kwargs.get("system", "")
+        assert "assert" in kwargs.get("system", "").lower()
 
 
 # ── SOCRATIC_RULES integrity ─────────────────────────────────────────────────

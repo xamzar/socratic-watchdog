@@ -1,3 +1,9 @@
+---
+name: socratic-watchdog
+aliases: [socratic-watchdog]
+tags: [project, tool]
+stage: playground
+---
 # 🧠 Socratic Watchdog
 
 A Socratic TTS coding assistant that watches your Jupyter notebook cells,
