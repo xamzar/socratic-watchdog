@@ -83,13 +83,26 @@ SOCRATIC_RULES_BRIEF = textwrap.dedent("""\
     ask: why did you choose that?"
 """)
 
-# System prompt for the test-case generator.  The Socratic rules MUST NOT be
-# used here — they tell the model to refuse to write code and to respond
+# Default system prompt for the test-case generator.  The Socratic rules MUST
+# NOT be used here — they tell the model to refuse to write code and to respond
 # [SILENT], which directly sabotages test generation.
+#
+# This is only the DEFAULT.  A Hermes test-auditor (see HERMES_INTEGRATION.md)
+# can override it via the SOCRATIC_TEST_GEN_SYSTEM env var or a prompt file, so
+# systematic generator mistakes can be corrected without a code change — see
+# SocraticWatchdog._test_gen_system().
 TEST_GEN_SYSTEM = textwrap.dedent("""\
     You are a precise Python test-case generator for beginner exercises.
     Output ONLY valid Python `assert` statements, one per line — no prose,
     no markdown, no code fences.
+
+    Keep the tests FAIR FOR BEGINNERS — they check whether the student solved
+    the stated task, not whether they know language trivia:
+    - Do NOT test floating-point results with `==` (e.g. `assert f(0.1, 0.2) ==
+      0.3`). Prefer integer examples, or `abs(result - expected) < 1e-9`.
+    - Stay in scope: test only the behavior the task describes. No hidden edge
+      cases the task never mentions (weird types, huge inputs, error handling).
+    - Use simple, obvious inputs a beginner would recognise as correct.
 """)
 
 
@@ -646,7 +659,7 @@ class SocraticWatchdog:
 
         t_llm_start = time.monotonic()
         try:
-            raw = self._call_llm(gen_prompt, system=TEST_GEN_SYSTEM)
+            raw = self._call_llm(gen_prompt, system=self._test_gen_system())
             if raw == "[SILENT]":
                 if not quiet:
                     print("⚠️  Could not generate tests (LLM unavailable).")
@@ -774,6 +787,32 @@ class SocraticWatchdog:
         if self.style == "brief":
             return SOCRATIC_RULES_BRIEF
         return SOCRATIC_RULES
+
+    @property
+    def _test_gen_prompt_file(self) -> Path:
+        """Where a Hermes auditor writes an amended test-gen system prompt."""
+        return self._tests_cache_dir.parent / "test_gen_system.txt"
+
+    def _test_gen_system(self) -> str:
+        """Effective system prompt for generating tests.
+
+        Precedence: ``SOCRATIC_TEST_GEN_SYSTEM`` env var → an override file
+        written by the Hermes test-auditor → the built-in ``TEST_GEN_SYSTEM``.
+        This is the seam that lets an agent correct systematic generator
+        mistakes (e.g. float-equality asserts) without a code change.
+        """
+        env = os.environ.get("SOCRATIC_TEST_GEN_SYSTEM")
+        if env:
+            return env
+        try:
+            override = self._test_gen_prompt_file
+            if override.exists():
+                text = override.read_text().strip()
+                if text:
+                    return text
+        except Exception:
+            pass
+        return TEST_GEN_SYSTEM
 
     def _resolve_task(self, source: str) -> str:
         """Return the best task description available for this cell.
@@ -983,8 +1022,34 @@ class SocraticWatchdog:
 
     # ── Notebook introspection (jupyter-mcp-cli) ────────────────────────
 
+    def _get_colab_cells(self) -> list[dict]:
+        """Live notebook cells from Google Colab, or [] if not running in Colab.
+
+        Colab lets the kernel ask the browser frontend for the current notebook
+        JSON — the only reliable way to see the markdown cell above ours there,
+        since Colab doesn't save a local ``.ipynb`` we could scan.
+        """
+        try:
+            from google.colab import _message  # only exists inside Colab
+        except Exception:
+            return []
+        try:
+            reply = _message.blocking_request("get_ipynb", timeout_sec=5)
+            return reply["ipynb"]["cells"]
+        except Exception:
+            return []
+
     def _get_notebook_cells(self) -> list[dict]:
-        """Fetch all cells of the currently active notebook via jupyter-mcp-cli."""
+        """Fetch all cells of the currently active notebook.
+
+        Sources, in order: Colab frontend → cached scan → jupyter-mcp-cli.
+        Colab cells are fetched fresh every call (the notebook grows as the
+        student adds cells), so they are never cached.
+        """
+        colab_cells = self._get_colab_cells()
+        if colab_cells:
+            return colab_cells
+
         # Check cache: if we already have cells, return them
         if self._cached_notebook_cells:
             return self._cached_notebook_cells

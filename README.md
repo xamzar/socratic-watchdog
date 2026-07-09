@@ -246,6 +246,7 @@ hidden, use LLM-generated tests instead:
 | `SOCRATIC_SESSION_LOG` | (on) | One JSON line per cell to `~/.hermes/socratic-sessions/<date>.jsonl`, for the nightly report. Set to `off` to disable, or a path to relocate. |
 | `SOCRATIC_STUDENT` | `unknown` | Label tagged onto each log line so the report can group exchanges per student |
 | `SOCRATIC_TESTS_CACHE` | `~/.hermes/socratic_tests_cache/` | Cache directory for auto-generated test cases |
+| `SOCRATIC_TEST_GEN_SYSTEM` | (built-in) | Override the system prompt used to generate hidden tests. Falls back to `~/.hermes/socratic-sessions/test_gen_system.txt` if that file exists — the seam a Hermes test-auditor uses to fix systematic generator mistakes |
 
 ## Architecture
 

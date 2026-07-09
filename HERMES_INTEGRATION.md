@@ -58,11 +58,37 @@ Run it by hand, or nightly via cron:
 - Have the cron job be a Hermes routine rather than raw crontab, so the report
   can trigger follow-ups (e.g. flag a stuck student to the professor in Slack).
 
-### 4. Hermes writes better hidden tests  ·  effort: M  ·  value: M
-`generate_tests()` currently makes one LLM call. Hand the task to a Hermes
-specialist that generates tests, *runs them against a reference solution it also
-writes*, discards any that don't pass, and returns only vetted asserts. Kills the
-"LLM hallucinated a wrong assert" failure mode. Cache the vetted set as today.
+### 4. Hermes as the test-case auditor  ·  effort: M  ·  value: H  ·  seam BUILT
+Author-written tests (the `#Test cases` cell) are trusted — a human wrote them.
+**LLM-generated tests are the risk**, and `generate_tests()` makes one blind
+call: nothing checks the asserts before a student hits them. The classic trap is
+a test that's *technically true but pedagogically wrong* — e.g. for a beginner
+`add(a, b)` task the model emits `assert add(0.1, 0.2) == 0.3`, which fails on
+floating-point rounding. The assert is "correct"; the student is baffled by
+something the exercise never asked them to care about.
+
+A Hermes **test-auditor** closes this loop:
+1. Read recently generated tests (from the session log + the on-disk cache).
+2. Judge each against the task: is it in scope? does it rely on float equality,
+   exotic types, or edge cases the task never mentions? does it trip a correct
+   beginner solution?
+3. When it spots a *systematic* mistake, **amend the test-generation system
+   prompt** to forbid it — then future generations avoid it. No code change.
+
+The seam for step 3 already exists: `_core._test_gen_system()` resolves the
+generator's system prompt as **`SOCRATIC_TEST_GEN_SYSTEM` env → an override file
+(`~/.hermes/socratic-sessions/test_gen_system.txt`) → the built-in default.**
+The auditor just writes that file. The built-in default already warns against
+float-equality and out-of-scope tests; the auditor's job is to catch the
+mistakes we *didn't* anticipate and add them.
+
+**Guardrails (same spirit as idea 5):** the auditor *proposes* a new prompt; a
+human approves before it goes live. Keep every version of the file (it's the
+generator's "genome") so a bad amendment can be rolled back, and so you can see
+exactly which prompt produced which tests. This is idea 5's evolution loop, but
+scoped to the *test generator* — where "good" is far more measurable (does the
+test trip a known-correct solution?) than for the Socratic questioner, which
+makes it the safest place to try adaptive prompts first.
 
 ### 5. The evolutionary system-prompt tuner  ·  effort: L  ·  value: ?  ← your idea
 Your instinct is right, and it has a rigorous name: this is **online

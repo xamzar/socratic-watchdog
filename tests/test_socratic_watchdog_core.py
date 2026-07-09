@@ -275,6 +275,52 @@ class TestEscalation:
         assert watchdog._attempts == {}
 
 
+# ── Colab notebook detection ─────────────────────────────────────────────────
+
+class TestColabCells:
+    def test_reads_cells_from_colab_frontend(self, watchdog, monkeypatch):
+        """When google.colab is present, cells come from its get_ipynb reply."""
+        import types
+        fake_cells = [{"cell_type": "markdown", "source": ["### Task: add"]},
+                      {"cell_type": "code", "source": ["def add(a, b): return a + b"]}]
+        msg = types.SimpleNamespace(
+            blocking_request=lambda name, timeout_sec=5: {"ipynb": {"cells": fake_cells}}
+        )
+        colab_pkg = types.ModuleType("google.colab")
+        colab_pkg._message = msg
+        google_pkg = types.ModuleType("google")
+        google_pkg.colab = colab_pkg
+        monkeypatch.setitem(sys.modules, "google", google_pkg)
+        monkeypatch.setitem(sys.modules, "google.colab", colab_pkg)
+
+        assert watchdog._get_colab_cells() == fake_cells
+
+    def test_returns_empty_when_not_in_colab(self, watchdog):
+        # google.colab isn't installed in the test env → graceful []
+        assert watchdog._get_colab_cells() == []
+
+
+# ── test-generation system prompt override ───────────────────────────────────
+
+class TestTestGenSystem:
+    def test_default_warns_against_float_equality(self, watchdog):
+        assert "floating-point" in watchdog._test_gen_system().lower()
+
+    def test_env_var_overrides_default(self, watchdog, monkeypatch):
+        monkeypatch.setenv("SOCRATIC_TEST_GEN_SYSTEM", "custom prompt")
+        assert watchdog._test_gen_system() == "custom prompt"
+
+    def test_override_file_beats_default_but_not_env(self, watchdog, tmp_path, monkeypatch):
+        monkeypatch.delenv("SOCRATIC_TEST_GEN_SYSTEM", raising=False)
+        watchdog._tests_cache_dir = tmp_path / "cache"
+        watchdog._test_gen_prompt_file.parent.mkdir(parents=True, exist_ok=True)
+        watchdog._test_gen_prompt_file.write_text("audited prompt")
+        assert watchdog._test_gen_system() == "audited prompt"
+        # env still wins over the file
+        monkeypatch.setenv("SOCRATIC_TEST_GEN_SYSTEM", "env wins")
+        assert watchdog._test_gen_system() == "env wins"
+
+
 # ── session logging ──────────────────────────────────────────────────────────
 
 class TestSessionLog:
