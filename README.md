@@ -74,14 +74,14 @@ No extra pip install needed for espeak-ng — the package calls the system `espe
 
 ### LLM access
 
-The package calls an LLM to analyse your code. Two backends, auto-fallback:
+The package calls an LLM over a plain HTTPS POST to any **OpenAI-compatible**
+chat-completions endpoint (DeepSeek by default). It tries these API-key env vars
+in order, first match wins: `SOCRATIC_LLM_API_KEY` → `DEEPSEEK_API_KEY` →
+`OPENAI_API_KEY`. If none are set, Socrates runs in test-only mode (the `#Test
+cases` fast path still works; no questions are generated).
 
-| Backend | Env var | Default? |
-|---|---|---|
-| **Direct API** (DeepSeek / OpenAI-compatible) | `SOCRATIC_LLM_BACKEND=direct` | ✅ default |
-| **Hermes CLI** (`hermes chat -q`) | `SOCRATIC_LLM_BACKEND=hermes` | fallback |
-
-The direct API path tries these env vars in order: `SOCRATIC_LLM_API_KEY` → `DEEPSEEK_API_KEY` → `OPENAI_API_KEY`. If none are set, it falls back to Hermes CLI automatically.
+> A Hermes agent backend is planned but **not yet implemented** — see
+> [`HERMES_INTEGRATION.md`](HERMES_INTEGRATION.md) for the design.
 
 ## How it works
 
@@ -227,12 +227,10 @@ hidden, use LLM-generated tests instead:
 
 | Env var | Default | Description |
 |---|---|---|
-| `SOCRATIC_LLM_BACKEND` | `direct` | `direct` (API call) or `hermes` (CLI). Both auto-fallback to the other. |
 | `SOCRATIC_LLM_BASE_URL` | `https://api.deepseek.com` | API base URL (also reads `OPENAI_BASE_URL`) |
 | `SOCRATIC_LLM_API_KEY` | — | API key (also reads `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`) |
-| `SOCRATIC_LLM_MODEL` | `deepseek-chat` | Model name |
+| `SOCRATIC_LLM_MODEL` | `deepseek-chat` | Model name (also reads `OPENAI_MODEL`) |
 | `SOCRATIC_LLM_TIMEOUT` | `30` | Seconds to wait for LLM |
-| `HERMES_PROFILE` | `dev` | Hermes profile used when `SOCRATIC_LLM_BACKEND=hermes` |
 
 ### Other
 
@@ -250,7 +248,7 @@ socratic_watchdog/
 │   ├── SocraticWatchdog.analyze()       # prompt → LLM → question/silence
 │   ├── SocraticWatchdog.speak()         # text → TTS (kokoro/edge-tts/espeak) → Audio
 │   ├── SocraticWatchdog.generate_tests() # LLM → test cases (disk-cached)
-│   └── _call_llm()                      # direct API + hermes CLI fallback
+│   └── _call_llm()                      # OpenAI-compatible HTTPS POST (DeepSeek default)
 ├── magics.py       # IPython magics + post-run hook
 │   ├── %%socratic, %socratic_task, %socratic_generate_tests, etc.
 │   ├── _post_run_cell_hook              # auto-watch mode
@@ -258,6 +256,18 @@ socratic_watchdog/
 │   └── 90+ Socratic praise phrases      # random praise on correct answers
 └── __init__.py     # %load_ext entry point
 ```
+
+## Contributing
+
+New here? Read [`ARCHITECTURE.md`](ARCHITECTURE.md) first — it maps every file,
+traces how one cell flows through the system, and defines the terms the code
+assumes. Roadmap lives in [`BACKLOG.md`](BACKLOG.md); the planned Hermes agent
+backend is designed in [`HERMES_INTEGRATION.md`](HERMES_INTEGRATION.md).
+
+The golden rule: **logic goes in `_core.py` (no Jupyter dependency, unit-tested);
+presentation goes in `magics.py`.** Add a test in
+`tests/test_socratic_watchdog_core.py`, run `pytest -q`, and if you change
+behavior, update this README in the same commit.
 
 ## License
 

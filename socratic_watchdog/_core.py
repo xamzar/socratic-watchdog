@@ -854,8 +854,7 @@ class SocraticWatchdog:
         * **API Key**: SOCRATIC_LLM_API_KEY → DEEPSEEK_API_KEY → OPENAI_API_KEY
         """
         try:
-            import json as _json
-            import urllib.request as _req
+            import urllib.request  # only needed here; stdlib HTTP client
             base_url = (
                 os.environ.get("SOCRATIC_LLM_BASE_URL")
                 or os.environ.get("OPENAI_BASE_URL")
@@ -874,7 +873,7 @@ class SocraticWatchdog:
             )
             if not api_key:
                 return "[SILENT]"
-            body = _json.dumps({
+            body = json.dumps({
                 "model": model,
                 "messages": [
                     {"role": "system", "content": system or self._get_system_prompt()},
@@ -883,15 +882,15 @@ class SocraticWatchdog:
                 "max_tokens": 200,
                 "temperature": 0.7,
             }).encode()
-            req = _req.Request(
+            request = urllib.request.Request(
                 f"{base_url.rstrip('/')}/chat/completions",
                 data=body,
                 headers={"Content-Type": "application/json",
                          "Authorization": f"Bearer {api_key}"},
                 method="POST",
             )
-            with _req.urlopen(req, timeout=LLM_TIMEOUT) as resp:
-                data = _json.loads(resp.read())
+            with urllib.request.urlopen(request, timeout=LLM_TIMEOUT) as response:
+                data = json.loads(response.read())
                 return data["choices"][0]["message"]["content"]
         except Exception:
             return "[SILENT]"

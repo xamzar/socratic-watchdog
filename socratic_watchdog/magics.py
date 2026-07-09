@@ -42,82 +42,79 @@ def _print_debug_table(watchdog) -> None:
     Consolidates auto-detect, cache, cell, LLM, and TTS timings into
     a single aligned table instead of scattered one-liners.
     """
-    t = watchdog._timings
-    gt = watchdog._generate_timings
-    ad = watchdog._auto_detect_time
-    rows = []
+    # Three sources of timing data, all populated by the last analyze() call:
+    analyze_timings = watchdog._timings           # cell run, LLM call, TTS deliver
+    gen_timings = watchdog._generate_timings       # test cache read / LLM generation
+    auto_detect_secs = watchdog._auto_detect_time  # markdown-above scan (or None)
 
-    def _add(label: str, seconds: float | None, note: str = "") -> None:
+    rows = []  # each row is (label, seconds_or_None, note) — rendered below
+
+    def add_row(label: str, seconds: float | None, note: str = "") -> None:
         rows.append((label, seconds, note))
 
-    # ── Cache / generate ──
-    if gt and gt.get("total", 0) > 0:
-        if "read" in gt:
+    # ── Where the tests came from (disk cache vs. fresh LLM generation) ──
+    if gen_timings and gen_timings.get("total", 0) > 0:
+        if "read" in gen_timings:
             test_count = len(watchdog.hidden_test_cases)
-            _add("cache · read",   gt.get("read"),  f"→ {test_count} tests")
-        else:
-            if "llm" in gt:
-                _add("generate · LLM",   gt.get("llm"),   "fresh")
+            add_row("cache · read", gen_timings.get("read"), f"→ {test_count} tests")
+        elif "llm" in gen_timings:
+            add_row("generate · LLM", gen_timings.get("llm"), "fresh")
 
-    # ── Auto-detect (always fires, always ~0.004s — not shown) ──
+    # ── Auto-detect (always fires, always ~0.004s — too small to list) ──
 
-    # ── Cell execution ──
-    if "run_cell" in t:
-        _add("cell execution", t["run_cell"], "")
+    # ── Running the student's cell ──
+    if "run_cell" in analyze_timings:
+        add_row("cell execution", analyze_timings["run_cell"], "")
 
-    # ── LLM analysis ──
-    llm_time = t.get("llm_call", 0)
+    # ── LLM analysis: either a real call, or a note on why it was skipped ──
+    llm_time = analyze_timings.get("llm_call", 0)
     if llm_time > 0:
-        _add("LLM analysis", llm_time, "")
+        add_row("LLM analysis", llm_time, "")
     elif len(watchdog._all_test_cases) > 0:
+        # Tests decided the outcome, so the LLM was skipped — say which way.
         details = getattr(watchdog, "_test_details", [])
         if details and any(d["status"] == "fail" for d in details):
-            _add("LLM analysis", None, "✗ tests failed")
+            add_row("LLM analysis", None, "✗ tests failed")
         else:
-            _add("LLM analysis", None, "⚡ all pass")
+            add_row("LLM analysis", None, "⚡ all pass")
     else:
-        _add("LLM analysis", None, "⚡ no tests")
+        add_row("LLM analysis", None, "⚡ no tests")
 
-    # ── TTS ──
-    tts_time = t.get("deliver", 0)
+    # ── Text-to-speech ──
+    tts_time = analyze_timings.get("deliver", 0)
     if tts_time > 0:
         backend = os.environ.get("SOCRATIC_TTS_BACKEND", DEFAULT_TTS_BACKEND)
-        _add("TTS", tts_time, backend)
+        add_row("TTS", tts_time, backend)
 
-    # ── Total ──
-    total = t.get("end_to_end", 0)
-    if ad is not None:
-        total += ad
-    if gt and gt.get("total", 0) > 0:
-        total += gt["total"]
+    # ── Grand total: end-to-end plus the two phases measured separately ──
+    total = analyze_timings.get("end_to_end", 0)
+    if auto_detect_secs is not None:
+        total += auto_detect_secs
+    if gen_timings and gen_timings.get("total", 0) > 0:
+        total += gen_timings["total"]
     total = round(total, 4)
 
-    # ── Render ──
-    W = 54
-    top = "┌─ Socratic Debug " + "─" * (W - 19) + "┐"
-    sep = "├" + "─" * (W - 2) + "┤"
-    bot = "└" + "─" * (W - 2) + "┘"
+    # ── Render the box-drawing table ──
+    box_width = 54
+    top = "┌─ Socratic Debug " + "─" * (box_width - 19) + "┐"
+    separator = "├" + "─" * (box_width - 2) + "┤"
+    bottom = "└" + "─" * (box_width - 2) + "┘"
 
     lines = [top]
-    for label, secs, note in rows:
-        lhs = f"│ {label:<24}"
-        if isinstance(secs, (int, float)) and secs > 0:
-            rhs = f"{secs:.4f}s"
-        else:
-            rhs = "       —"
+    for label, seconds, note in rows:
+        left = f"│ {label:<24}"
+        right = f"{seconds:.4f}s" if isinstance(seconds, (int, float)) and seconds > 0 else "       —"
         if note:
-            rhs = f"{rhs}  {note}"
-        pad = W - 2 - len(lhs) - len(rhs)
-        line = lhs + " " * max(1, pad) + rhs + " │"
-        lines.append(line)
+            right = f"{right}  {note}"
+        padding = box_width - 2 - len(left) - len(right)
+        lines.append(left + " " * max(1, padding) + right + " │")
 
-    lines.append(sep)
-    lhs = f"│ {'TOTAL':<24}"
-    rhs = f"{total:.4f}s"
-    pad = W - 2 - len(lhs) - len(rhs) - 2
-    line = lhs + " " * max(1, pad) + rhs + "  │"
-    lines.append(line)
-    lines.append(bot)
+    lines.append(separator)
+    left = f"│ {'TOTAL':<24}"
+    right = f"{total:.4f}s"
+    padding = box_width - 2 - len(left) - len(right) - 2
+    lines.append(left + " " * max(1, padding) + right + "  │")
+    lines.append(bottom)
 
     print("\n".join(lines))
 
