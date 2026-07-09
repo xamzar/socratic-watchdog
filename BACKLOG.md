@@ -11,10 +11,10 @@ same session; the rest are proposals for review.
 - ✅ `%socratic_help` completeness — add task/style/generate_tests + `#Test cases`.
 
 ## Near-term (small, safe, high value)
-1. **`%socratic_hint` escalation ladder.** Track attempts per task; after N
-   failed cells on the same task, let the question get progressively more
-   concrete (Socratic question → leading question → near-answer). One counter
-   on the watchdog, reset on pass. Teachers asked for "eventually just tell me".
+1. ✅ **Hint escalation ladder.** `_attempts` counter per task; questions get
+   progressively more concrete (Socratic → leading hint → direct explanation),
+   reset on pass. Done this session. Possible follow-up: expose the current
+   level in the debug table and let teachers tune the thresholds.
 2. **Session transcript export (`%socratic_export`).** There are already
    `~/socratic-sessions/session-*` dirs — dump the cell/question/verdict history
    to JSON/Markdown for grading and review. Read-only side effect, no core risk.

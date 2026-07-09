@@ -233,6 +233,45 @@ class TestAnalyze:
             assert result == "[TESTS_FAILED]"
 
 
+# ── hint escalation ladder ───────────────────────────────────────────────────
+
+class TestEscalation:
+    def test_repeated_failures_escalate_then_pass_resets(self, watchdog):
+        """Each failed attempt on the same task makes the prompt more concrete;
+        solving the task resets the ladder back to gentle."""
+        watchdog.set_task("Write add(a, b) returning a + b")
+        prompts = []
+
+        def fake_llm(prompt, system=None):
+            prompts.append(prompt)
+            return "What is a + b supposed to be?"  # a question = off track
+
+        with mock.patch.object(watchdog, "_has_api_key", return_value=True), \
+             mock.patch.object(watchdog, "_call_llm", side_effect=fake_llm):
+            watchdog.analyze("def add(a, b): return a - b")   # attempt 1
+            assert watchdog._attempts["Write add(a, b) returning a + b"] == 1
+            watchdog.analyze("def add(a, b): return a - b")   # attempt 2
+            watchdog.analyze("def add(a, b): return a - b")   # attempt 3
+
+        assert "MORE POINTED" not in prompts[0]          # level 1 = plain Socratic
+        assert "MORE POINTED" in prompts[1]              # level 2
+        assert "leading hint" in prompts[2]              # level 3
+
+        # Now the LLM stays silent (code is correct) → ladder resets.
+        with mock.patch.object(watchdog, "_has_api_key", return_value=True), \
+             mock.patch.object(watchdog, "_call_llm", return_value="[SILENT]"):
+            result = watchdog.analyze("def add(a, b): return a + b")
+        assert result == ""
+        assert "Write add(a, b) returning a + b" not in watchdog._attempts
+
+    def test_no_task_means_no_escalation_tracking(self, watchdog):
+        """Without a resolved task there is nothing to escalate against."""
+        with mock.patch.object(watchdog, "_has_api_key", return_value=True), \
+             mock.patch.object(watchdog, "_call_llm", return_value="A question?"):
+            watchdog.analyze("x = 1")
+        assert watchdog._attempts == {}
+
+
 # ── _run_tests ───────────────────────────────────────────────────────────────
 
 class TestRunTests:

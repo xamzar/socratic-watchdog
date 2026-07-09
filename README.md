@@ -24,6 +24,7 @@ and celebrates with confetti when you get it right.
 | **Auto-generated tests** | `%socratic_generate_tests` — LLM writes test cases from the task |
 | **Fast path** | When tests pass, skips LLM entirely — instant silent + confetti |
 | **Honest failure** | Tests fail with no LLM available → reports the failure plainly, never false praise |
+| **Hint escalation** | Repeated failures on the same task make questions progressively more concrete, capping at a direct explanation — a stuck student never loops forever |
 | **Three TTS backends** | espeak-ng (local robotic, current default) / edge-tts (cloud neural) / kokoro (local neural) |
 | **Socratic method** | Never gives answers — only asks guiding questions |
 | **Subtitle boxes** | Questions and praise shown as styled UI boxes alongside audio |

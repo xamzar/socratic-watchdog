@@ -163,6 +163,11 @@ class SocraticWatchdog:
         self._auto_detect_time: Optional[float] = None
         """Wall-clock time of the last ``_try_auto_detect`` call, or None."""
 
+        self._attempts: dict[str, int] = {}
+        """Failed-attempt count per task (keyed by task text). Drives the hint
+        escalation ladder: repeated failures on the same task make Socrates'
+        questions progressively more concrete. Reset when the task passes."""
+
     # ── Public API ──────────────────────────────────────────────────────
 
     @property
@@ -229,6 +234,7 @@ class SocraticWatchdog:
                     print(f"🧪  {total}/{total} tests passed ⚡  skipping LLM  ({tag})")
                     for tc in self._all_test_cases:
                         print(f"     {tc}")
+                self._attempts.pop(self._resolve_task(source), None)  # solved → reset ladder
                 return ""  # instant win — confetti, no API call
             # Tests failed — feed failure output to the LLM for better questions
             if test_result:
@@ -274,7 +280,15 @@ class SocraticWatchdog:
                 print("⚠️  LLM unavailable — no API key configured, no test cases set")
             return "[LLM_UNAVAILABLE]"
 
-        prompt = self._build_prompt(source, error)
+        # Hint escalation: count off-track attempts on this task and let the
+        # prompt get more concrete each time (only when there's a real task).
+        task_key = self._resolve_task(source)
+        escalation = ""
+        if task_key:
+            self._attempts[task_key] = self._attempts.get(task_key, 0) + 1
+            escalation = self._escalation_directive(self._attempts[task_key])
+
+        prompt = self._build_prompt(source, error, escalation)
         t2 = time.monotonic()
 
         # ═════════════════════════════════════════════════════════════════
@@ -299,6 +313,11 @@ class SocraticWatchdog:
             "parse":        round(t4 - t3, 3),
             "total":        round(t4 - t1, 3),
         }
+
+        # Correct now (LLM stayed [SILENT] → empty result) → reset the ladder
+        # so a later stumble on this task starts gentle again.
+        if not result and task_key:
+            self._attempts.pop(task_key, None)
 
         # ── Record exchange in exploration conversation ──
         if self.exploration_mode and source.strip():
@@ -703,7 +722,28 @@ class SocraticWatchdog:
             return detected
         return ""
 
-    def _build_prompt(self, source: str, error: str = "") -> str:
+    def _escalation_directive(self, level: int) -> str:
+        """Extra prompt guidance based on how many times the student has failed
+        this same task. Level 1 = normal Socratic question; higher levels get
+        progressively more concrete, capping at a direct (but not spoon-fed)
+        explanation so a stuck student is never left looping forever.
+        """
+        if level <= 1:
+            return ""
+        if level == 2:
+            return ("\n\nThe student has already tried this task and is still "
+                    "off track. Ask a MORE POINTED question that narrows toward "
+                    "the specific problem — still a single question, no answer.")
+        if level == 3:
+            return ("\n\nThe student has tried several times and is stuck. Give "
+                    "a strong leading hint that names the concept or the exact "
+                    "line involved, framed as a question. Do NOT write the fix.")
+        return ("\n\nThe student has tried many times and is likely frustrated. "
+                "It is now OK to state plainly what is wrong and which concept "
+                "fixes it (one or two sentences), then ask them to apply it. "
+                "Do NOT paste a full corrected solution.")
+
+    def _build_prompt(self, source: str, error: str = "", escalation: str = "") -> str:
         # The Socratic system rules are sent via the system role in
         # _call_llm — don't duplicate them in the user content here.
         parts: list[str] = []
@@ -769,6 +809,9 @@ class SocraticWatchdog:
                 "something specific in their code they can actually DO next."
             )
             parts.append("")
+
+        if escalation:
+            parts.append(escalation)
 
         parts.append("")
         parts.append(
