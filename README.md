@@ -20,10 +20,11 @@ and celebrates with confetti when you get it right.
 | **`%%socratic`** cell magic | Analyse one cell at a time |
 | **`%socratic_watch on`** | Auto-watch every cell you run |
 | **`%socratic_task auto`** | Auto-detect task from markdown above |
-| **Embedded test cases** | `%socratic_tests` — embed expected behaviour (`--hidden` for invisible tests) |
+| **Cell-below test cases** | A code cell below marked `#Test cases` — its `assert` lines become the hidden tests |
 | **Auto-generated tests** | `%socratic_generate_tests` — LLM writes test cases from the task |
 | **Fast path** | When tests pass, skips LLM entirely — instant silent + confetti |
-| **Three TTS backends** | edge-tts (cloud neural, default) / kokoro (local neural) / espeak-ng (local robotic) |
+| **Honest failure** | Tests fail with no LLM available → reports the failure plainly, never false praise |
+| **Three TTS backends** | espeak-ng (local robotic, current default) / edge-tts (cloud neural) / kokoro (local neural) |
 | **Socratic method** | Never gives answers — only asks guiding questions |
 | **Subtitle boxes** | Questions and praise shown as styled UI boxes alongside audio |
 | **Confetti + praise** | Random Socratic praise + confetti animation on correct answers |
@@ -92,7 +93,7 @@ The direct API path tries these env vars in order: `SOCRATIC_LLM_API_KEY` → `D
                                                         └──────────┘
 ```
 
-When **test cases** are set (via `%socratic_tests` or `%socratic_generate_tests`), there's a fast path: if the code passes all tests, the LLM is skipped entirely — instant silent + confetti.
+When **test cases** are set (via a `#Test cases` cell below or `%socratic_generate_tests`), there's a fast path: if the code passes all tests, the LLM is skipped entirely — instant silent + confetti.
 
 The **Socrates persona** instructs the LLM to:
 1. Never give direct answers or show corrected code
@@ -109,8 +110,7 @@ The **Socrates persona** instructs the LLM to:
 | `%socratic_task auto` | Auto-detect task from markdown cell above |
 | `%socratic_task clear` | Remove the task |
 | `%socratic_task` | Show current task |
-| `%socratic_tests` | Embed expected test cases (cell body becomes tests) |
-| `%socratic_tests --hidden` | Same, but students never see the tests |
+| `#Test cases` cell below | Author-written tests: a code cell *below* your `%%socratic` cell, marked `#Test cases` |
 | `%socratic_generate_tests` | LLM auto-generates hidden test cases from the task |
 | `%socratic_watch on` | Watch every cell automatically (3 s debounce) |
 | `%socratic_watch off` | Stop auto-watching |
@@ -129,32 +129,36 @@ The **Socrates persona** instructs the LLM to:
 
 ### Test cases
 
-Pre-assigned test cases let Socrates check correctness deterministically — no LLM guesswork:
+Author-written test cases let Socrates check correctness deterministically — no LLM
+guesswork. Put them in a **code cell directly below** your `%%socratic` cell, marked
+with `#Test cases` (also accepted: `#Tests`, `#test_cases`). The watchdog scans that
+cell, runs its `assert` lines as hidden tests, and caches them on disk keyed by task:
 
 ```python
 %load_ext socratic_watchdog
 %socratic_task Write a function that checks if a number is even
+```
 
-%%socratic_tests
+```python
+%%socratic
+def is_even(n):
+    return n % 2 == 0
+```
+
+```python
+#Test cases
 assert is_even(0) == True
 assert is_even(1) == False
 assert is_even(42) == True
 assert is_even(-7) == False
-
-# Now Socrates knows the exact expected behaviour.
-# When the student's code passes all tests → instant silent + confetti.
-# When it fails → test failure output is fed to the LLM for better questions.
 ```
 
-Use `--hidden` to keep tests invisible to students (they still run):
+- Pass all tests → instant silent + confetti, LLM skipped entirely.
+- Fail with an LLM available → the failures are fed to the LLM for a sharper question.
+- Fail with **no** LLM available → reported as a plain failure (never false praise).
 
-```python
-%%socratic_tests --hidden
-assert is_even(0) == True
-assert is_even(100) == True
-```
-
-Or let the LLM generate them from the task:
+The `#Test cases` cell runs like any other cell, so students see it. To keep tests
+hidden, use LLM-generated tests instead:
 
 ```python
 %socratic_task Write a function that reverses a string
@@ -213,7 +217,7 @@ Or let the LLM generate them from the task:
 
 | Env var | Default | Description |
 |---|---|---|
-| `SOCRATIC_TTS_BACKEND` | `edge-tts` | `kokoro` (local neural, ~3.8 s), `edge-tts` (cloud neural, ~3 s), or `espeak` (local robotic, ~0.03 s) |
+| `SOCRATIC_TTS_BACKEND` | `espeak` | `espeak` (local robotic, ~0.03 s, current default), `edge-tts` (cloud neural, ~3 s, planned default), or `kokoro` (local neural, ~3.8 s) |
 | `SOCRATIC_TTS_VOICE` | `en-US-AndrewNeural` | Voice for edge-tts |
 | `SOCRATIC_KOKORO_VOICE` | `af_heart` | Kokoro voice pack (`af_heart`, `am_adam`, `bm_lewis`, etc.) |
 | `SOCRATIC_ESPEAK_VOICE` | `en-us` | Voice for espeak-ng |
@@ -246,7 +250,7 @@ socratic_watchdog/
 │   ├── SocraticWatchdog.generate_tests() # LLM → test cases (disk-cached)
 │   └── _call_llm()                      # direct API + hermes CLI fallback
 ├── magics.py       # IPython magics + post-run hook
-│   ├── %%socratic, %socratic_task, %socratic_tests, etc.
+│   ├── %%socratic, %socratic_task, %socratic_generate_tests, etc.
 │   ├── _post_run_cell_hook              # auto-watch mode
 │   ├── confetti animation               # canvas confetti on correct answers
 │   └── 90+ Socratic praise phrases      # random praise on correct answers
