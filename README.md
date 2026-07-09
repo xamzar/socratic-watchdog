@@ -25,6 +25,7 @@ and celebrates with confetti when you get it right.
 | **Fast path** | When tests pass, skips LLM entirely — instant silent + confetti |
 | **Honest failure** | Tests fail with no LLM available → reports the failure plainly, never false praise |
 | **Hint escalation** | Repeated failures on the same task make questions progressively more concrete, capping at a direct explanation — a stuck student never loops forever |
+| **Nightly reports** | Sessions log to disk; `scripts/nightly_report.py` gives the professor per-student stats, stuck-loop flags, and an LLM answer-leak review |
 | **Three TTS backends** | espeak-ng (local robotic, current default) / edge-tts (cloud neural) / kokoro (local neural) |
 | **Socratic method** | Never gives answers — only asks guiding questions |
 | **Subtitle boxes** | Questions and praise shown as styled UI boxes alongside audio |
@@ -238,6 +239,8 @@ hidden, use LLM-generated tests instead:
 |---|---|---|
 | `SOCRATIC_DEBUG` | (unset) | Set to `1` to print timing breakdown after each analysis |
 | `SOCRATIC_DEBOUNCE` | `3.0` | Seconds between auto-watch analyses (min gap in `%socratic_watch on` mode) |
+| `SOCRATIC_SESSION_LOG` | (on) | One JSON line per cell to `~/.hermes/socratic-sessions/<date>.jsonl`, for the nightly report. Set to `off` to disable, or a path to relocate. |
+| `SOCRATIC_STUDENT` | `unknown` | Label tagged onto each log line so the report can group exchanges per student |
 | `SOCRATIC_TESTS_CACHE` | `~/.hermes/socratic_tests_cache/` | Cache directory for auto-generated test cases |
 
 ## Architecture
@@ -256,6 +259,27 @@ socratic_watchdog/
 │   └── 90+ Socratic praise phrases      # random praise on correct answers
 └── __init__.py     # %load_ext entry point
 ```
+
+## Classroom reports
+
+Every analysed cell appends one JSON line to
+`~/.hermes/socratic-sessions/<date>.jsonl` (task, code, verdict, question,
+attempt count). A nightly script turns a day of those into a professor report:
+
+```bash
+python scripts/nightly_report.py                 # yesterday, to stdout
+python scripts/nightly_report.py --date 2026-07-09 --out report.md
+```
+
+It reports per-student pass rates, flags **stuck loops** (≥4 attempts, never
+passed) and **offline-LLM** cells, and — if an API key is set — runs an
+**answer-leak review** that flags questions where Socrates gave away the fix.
+See [`HERMES_INTEGRATION.md`](HERMES_INTEGRATION.md) for the cron setup and how a
+Hermes agent takes this further.
+
+> **Privacy:** logging is on by default and records student code. Set
+> `SOCRATIC_SESSION_LOG=off` to disable, and `SOCRATIC_STUDENT` to label who's at
+> the keyboard. Tell your students their work is logged.
 
 ## Contributing
 

@@ -33,12 +33,30 @@ the student's actual code?* If it fails, regenerate. Cheap quality gate that
 catches the LLM's worst misses (giving away the fix) before a student sees them.
 Runs async so it doesn't slow the happy path.
 
-### 3. Session memory via the Hermes blackboard  ·  effort: M  ·  value: H
-Today `_attempts` (the escalation counter) lives in RAM and dies with the kernel.
-Persist each exchange — task, student code, question, verdict — to the Hermes
-bus/vault. Then a Hermes agent has a real **learner model**: which concepts this
-student repeatedly trips on, across sessions. Feeds the classroom-dashboard idea
-already in the two-node plan, and makes escalation smarter than a raw counter.
+### 3. Session memory + nightly professor report  ·  partially BUILT
+The enabling primitive now exists: every `analyze()` appends one JSON line to a
+daily log (`_core._log_session`, on by default, `SOCRATIC_SESSION_LOG=off` to
+disable). `scripts/nightly_report.py` reads a day's log and emits a Markdown
+report: per-student stats, stuck-loop detection, offline-LLM flags, and — when an
+API key is present — an **LLM answer-leak review** that flags any question that
+gave away the fix instead of guiding.
+
+Run it by hand, or nightly via cron:
+
+```cron
+# 6am daily: yesterday's report, mailed/saved for the professor
+0 6 * * *  cd /path/to/socratic-watchdog && .venv/bin/python scripts/nightly_report.py --out reports/$(date -d yesterday +\%F).md
+```
+
+**Where Hermes comes in next:**
+- Swap `review_answer_leaks()`'s LLM call for a Hermes *pedagogy specialist* so
+  the leak-judging and the report prose come from an agent with classroom memory,
+  not a one-shot completion.
+- Push the JSONL onto the Hermes bus/vault so an agent builds a cross-session
+  **learner model** (which concepts each student repeatedly trips on) instead of
+  the per-day snapshot the script sees today.
+- Have the cron job be a Hermes routine rather than raw crontab, so the report
+  can trigger follow-ups (e.g. flag a stuck student to the professor in Slack).
 
 ### 4. Hermes writes better hidden tests  ·  effort: M  ·  value: M
 `generate_tests()` currently makes one LLM call. Hand the task to a Hermes

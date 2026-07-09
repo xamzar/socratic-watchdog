@@ -201,6 +201,15 @@ class SocraticWatchdog:
         escalation ladder: repeated failures on the same task make Socrates'
         questions progressively more concrete. Reset when the task passes."""
 
+        # Session logging: append one JSON line per analyze() so a nightly job
+        # (see scripts/nightly_report.py) can spot stuck students and answer
+        # leaks. Enabled by default; set SOCRATIC_SESSION_LOG=off to disable,
+        # or to a file path to choose where it goes.
+        self._session_log_setting: str = os.environ.get("SOCRATIC_SESSION_LOG", "")
+        self.student_id: str = os.environ.get("SOCRATIC_STUDENT", "unknown")
+        """Optional label for who is at the keyboard, tagged onto each log line
+        so a classroom report can group exchanges per student."""
+
     # ── Public API ──────────────────────────────────────────────────────
 
     @property
@@ -266,6 +275,7 @@ class SocraticWatchdog:
                     print(f"🧪  {total}/{total} tests passed ⚡  skipping LLM  ({tag})")
                     for tc in self._all_test_cases:
                         print(f"     {tc}")
+                self._log_session(source, error, "")  # log before the ladder reset
                 self._attempts.pop(self._resolve_task(source), None)  # solved → reset ladder
                 return ""  # instant win — confetti, no API call
             # Tests failed — feed failure output to the LLM for better questions
@@ -307,9 +317,11 @@ class SocraticWatchdog:
             if self._all_test_cases:
                 if self._debug:
                     print("⚠️  Tests failed and no LLM — reporting failure, not asking a question")
+                self._log_session(source, error, "[TESTS_FAILED]")
                 return "[TESTS_FAILED]"
             if self._debug:
                 print("⚠️  LLM unavailable — no API key configured, no test cases set")
+            self._log_session(source, error, "[LLM_UNAVAILABLE]")
             return "[LLM_UNAVAILABLE]"
 
         # Hint escalation: count off-track attempts on this task and let the
@@ -359,7 +371,60 @@ class SocraticWatchdog:
                 "student_error": error.strip() if error else "",
             })
 
+        self._log_session(source, error, result)
         return result
+
+    @property
+    def _session_log_path(self) -> Optional[Path]:
+        """Where to append session logs, or None if logging is disabled.
+
+        ``SOCRATIC_SESSION_LOG`` unset → default dir, one file per day.
+        Set to ``"off"``/``"0"``/``""`` → disabled. Set to a path → use it.
+        """
+        setting = self._session_log_setting
+        if setting.lower() in ("off", "0", "false", "no"):
+            return None
+        if setting:
+            return Path(setting).expanduser()
+        # Default: a dated file next to the test cache, so all Socratic state
+        # lives under one directory the nightly job already knows about.
+        default_dir = self._tests_cache_dir.parent / "socratic-sessions"
+        return default_dir / f"{time.strftime('%Y-%m-%d')}.jsonl"
+
+    def _log_session(self, source: str, error: str, result: str) -> None:
+        """Append one JSON line describing this exchange. Never raises — a
+        logging failure must not break the student's analysis."""
+        path = self._session_log_path
+        if path is None:
+            return
+        # Translate analyze()'s return protocol into a plain verdict word.
+        if result == "":
+            verdict, question = "pass", ""
+        elif result == "[TESTS_FAILED]":
+            verdict, question = "tests_failed", ""
+        elif result == "[LLM_UNAVAILABLE]":
+            verdict, question = "llm_unavailable", ""
+        else:
+            verdict, question = "question", result
+        task = self._resolve_task(source)
+        entry = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "student": self.student_id,
+            "task": task,
+            "code": source.strip(),
+            "had_error": bool(error.strip()),
+            "verdict": verdict,
+            "question": question,
+            "attempt": self._attempts.get(task, 0),
+            "style": self.style,
+            "model": os.environ.get("SOCRATIC_LLM_MODEL", "deepseek-chat"),
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "a") as f:
+                f.write(json.dumps(entry) + "\n")
+        except Exception:
+            pass  # logging is best-effort; never interrupt the lesson
 
     def speak(self, text: str) -> Optional["IPython.display.Audio"]:
         """Convert text to speech. Returns Audio widget or None on failure.
@@ -835,7 +900,8 @@ class SocraticWatchdog:
             or os.environ.get("OPENAI_API_KEY")
         )
 
-    def _call_llm(self, prompt: str, system: Optional[str] = None) -> str:
+    def _call_llm(self, prompt: str, system: Optional[str] = None,
+                  max_tokens: int = 200) -> str:
         """Call the LLM API to analyze student code.
 
         Sends ``prompt`` to the OpenAI-compatible chat completions endpoint.
@@ -843,7 +909,9 @@ class SocraticWatchdog:
 
         ``system`` overrides the system-role message; defaults to the Socratic
         rules.  Callers that are NOT doing Socratic analysis (e.g. test-case
-        generation) must pass their own neutral system prompt.
+        generation) must pass their own neutral system prompt.  ``max_tokens``
+        caps the reply length — questions are short, but the nightly report
+        needs room, so it passes a larger value.
 
         Returns the model's message content, or ``"[SILENT]"`` on failure.
 
@@ -879,7 +947,7 @@ class SocraticWatchdog:
                     {"role": "system", "content": system or self._get_system_prompt()},
                     {"role": "user", "content": prompt},
                 ],
-                "max_tokens": 200,
+                "max_tokens": max_tokens,
                 "temperature": 0.7,
             }).encode()
             request = urllib.request.Request(

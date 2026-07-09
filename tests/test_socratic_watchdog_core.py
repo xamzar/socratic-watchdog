@@ -28,8 +28,11 @@ from socratic_watchdog._core import (
 
 @pytest.fixture
 def watchdog():
-    """Fresh SocraticWatchdog instance with no state."""
-    return SocraticWatchdog()
+    """Fresh SocraticWatchdog instance with no state (session logging off so
+    tests never touch the real log directory)."""
+    w = SocraticWatchdog()
+    w._session_log_setting = "off"
+    return w
 
 
 @pytest.fixture
@@ -270,6 +273,33 @@ class TestEscalation:
              mock.patch.object(watchdog, "_call_llm", return_value="A question?"):
             watchdog.analyze("x = 1")
         assert watchdog._attempts == {}
+
+
+# ── session logging ──────────────────────────────────────────────────────────
+
+class TestSessionLog:
+    def test_pass_and_question_are_logged_as_jsonl(self, watchdog, tmp_path):
+        """Each analyze() appends one JSON line with the right verdict."""
+        import json
+        log = tmp_path / "day.jsonl"
+        watchdog._session_log_setting = str(log)
+        watchdog.set_tests("assert add(1, 2) == 3")
+
+        with mock.patch.object(watchdog, "_has_api_key", return_value=True), \
+             mock.patch.object(watchdog, "_call_llm", return_value="Why subtract?"):
+            watchdog.analyze("def add(a, b): return a - b")   # fails → question
+            watchdog.analyze("def add(a, b): return a + b")   # passes → fast path
+
+        lines = log.read_text().strip().split("\n")
+        assert len(lines) == 2
+        first, second = json.loads(lines[0]), json.loads(lines[1])
+        assert first["verdict"] == "question" and first["question"] == "Why subtract?"
+        assert second["verdict"] == "pass" and second["question"] == ""
+        assert "ts" in first and "code" in first
+
+    def test_off_disables_logging(self, watchdog, tmp_path):
+        watchdog._session_log_setting = "off"
+        assert watchdog._session_log_path is None
 
 
 # ── _run_tests ───────────────────────────────────────────────────────────────
