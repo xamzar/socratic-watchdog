@@ -6,6 +6,7 @@ No IPython dependency. Works in any Python environment.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -13,6 +14,7 @@ import re
 import subprocess
 import tempfile
 import textwrap
+import time
 import wave
 from pathlib import Path
 from typing import Optional
@@ -91,6 +93,37 @@ TEST_GEN_SYSTEM = textwrap.dedent("""\
 """)
 
 
+def _task_markdown_above(cells: list[dict], idx: int) -> Optional[str]:
+    """Scan upward from cell ``idx`` for the task markdown.
+
+    Skips helper cells (pure-magic / blank code) but stops at real code so we
+    never cross into an unrelated section above. Returns the cleaned markdown
+    text only if it is long enough and mentions a task-trigger word, else None.
+    Shared by both notebook-sourcing paths (jupyter-mcp-cli and local .ipynb).
+    """
+    above = None
+    j = idx - 1
+    while j >= 0:
+        prev = cells[j]
+        if prev.get("cell_type") == "markdown":
+            above = prev
+            break
+        prev_src = "".join(prev.get("source", []))
+        if any(ln.strip() and not ln.strip().startswith(("%", "!"))
+               for ln in prev_src.splitlines()):
+            break  # real code above — don't cross it
+        j -= 1
+    if above is None:
+        return None
+    text = "".join(above.get("source", []))
+    if len(text.strip()) <= 30:          # too short → title / divider
+        return None
+    if "task" not in text.lower():       # no trigger word → not a task cell
+        return None
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)  # drop HTML comments
+    return text.strip()
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 #  CORE ENGINE
 # ═══════════════════════════════════════════════════════════════════════════
@@ -140,7 +173,7 @@ class SocraticWatchdog:
 
         self.hidden_test_cases: list[str] = []
         """Hidden test cases — run but never shown to the student.
-        Set via ``%socratic_tests --hidden`` or auto-generated."""
+        Set from a ``#Test cases`` cell below, or auto-generated."""
 
         self._tests_cache_dir: Path = (
             Path(os.environ.get("SOCRATIC_TESTS_CACHE",
@@ -201,12 +234,11 @@ class SocraticWatchdog:
 
         Populates ``self._timings`` with per-step wall-clock times.
 
-        **Fast path:** when ``%socratic_tests`` are set and the student's code
+        **Fast path:** when test cases are set and the student's code
         passes all of them, the LLM is skipped entirely — instant silent + confetti.
 
         Pipeline: tests → prompt → LLM → parse → result
         """
-        import time
         t0 = time.monotonic()
         self._timings = {}
 
@@ -339,7 +371,6 @@ class SocraticWatchdog:
 
         Records wall-clock time in ``self._tts_time``.
         """
-        import time
         self._tts_time = None
         if not text.strip():
             return None
@@ -420,18 +451,21 @@ class SocraticWatchdog:
         self._cached_notebook_cells = []
         self._exploration_history = []
 
+    def _cache_file(self, task: str) -> Path:
+        """Path to the on-disk test cache for a task (keyed by its sha256)."""
+        key = hashlib.sha256(task.strip().encode()).hexdigest()[:16]
+        return self._tests_cache_dir / f"{key}.json"
+
     def peek_cache(self, task_description: str = "") -> dict | None:
         """Return the cached test data for a task, or None if not cached.
 
         Returns ``{task, tests, hash, age_seconds}`` so callers can display
         the content without loading it into ``hidden_test_cases``.
         """
-        import hashlib, time as _time
         task = (task_description or self.task_description).strip()
         if not task:
             return None
-        cache_key = hashlib.sha256(task.encode()).hexdigest()[:16]
-        cache_file = self._tests_cache_dir / f"{cache_key}.json"
+        cache_file = self._cache_file(task)
         if not cache_file.exists():
             return None
         try:
@@ -439,8 +473,8 @@ class SocraticWatchdog:
             return {
                 "task": cached.get("task", task),
                 "tests": cached.get("tests", []),
-                "hash": cache_key,
-                "age_seconds": round(_time.time() - cache_file.stat().st_mtime),
+                "hash": cache_file.stem,
+                "age_seconds": round(time.time() - cache_file.stat().st_mtime),
             }
         except Exception:
             return None
@@ -451,7 +485,6 @@ class SocraticWatchdog:
         Each entry: ``{task, tests, hash, age_seconds, test_count}``.
         Sorted newest-first.
         """
-        import time as _time
         entries = []
         if not self._tests_cache_dir.exists():
             return entries
@@ -466,7 +499,7 @@ class SocraticWatchdog:
                     "task": cached.get("task", ""),
                     "tests": cached.get("tests", []),
                     "hash": cache_file.stem,
-                    "age_seconds": round(_time.time() - cache_file.stat().st_mtime),
+                    "age_seconds": round(time.time() - cache_file.stat().st_mtime),
                     "test_count": len(cached.get("tests", [])),
                 })
             except Exception:
@@ -483,8 +516,7 @@ class SocraticWatchdog:
         (printed when ``self._debug`` is True).  Pass ``quiet=True`` to
         suppress the status prints (caller emits its own indicator).
         """
-        import hashlib, time as _time
-        t0 = _time.monotonic()
+        t0 = time.monotonic()
         self._generate_timings = {}
 
         task = (task_description or self.task_description).strip()
@@ -494,22 +526,21 @@ class SocraticWatchdog:
             self._generate_timings["total"] = 0.0
             return []
 
-        # ── Hash + cache path ──
-        cache_key = hashlib.sha256(task.encode()).hexdigest()[:16]
+        # ── Cache path ──
         self._tests_cache_dir.mkdir(parents=True, exist_ok=True)
-        cache_file = self._tests_cache_dir / f"{cache_key}.json"
-        t1 = _time.monotonic()
+        cache_file = self._cache_file(task)
+        t1 = time.monotonic()
 
         # ── Cache lookup ──
         hit = cache_file.exists()
-        t2 = _time.monotonic()
+        t2 = time.monotonic()
 
         # ── Cache hit ──
         if hit:
             try:
                 cached = json.loads(cache_file.read_text())
                 self.hidden_test_cases = cached.get("tests", [])
-                t3 = _time.monotonic()
+                t3 = time.monotonic()
 
                 self._generate_timings = {
                     "setup":   round(t1 - t0, 4),
@@ -548,7 +579,7 @@ class SocraticWatchdog:
             assert greet("Bob") == "Hello, Bob"
         """)
 
-        t_llm_start = _time.monotonic()
+        t_llm_start = time.monotonic()
         try:
             raw = self._call_llm(gen_prompt, system=TEST_GEN_SYSTEM)
             if raw == "[SILENT]":
@@ -557,8 +588,8 @@ class SocraticWatchdog:
                 self._generate_timings = {
                     "setup": round(t1 - t0, 4),
                     "lookup": round(t2 - t1, 4),
-                    "llm_err": round(_time.monotonic() - t_llm_start, 4),
-                    "total": round(_time.monotonic() - t0, 4),
+                    "llm_err": round(time.monotonic() - t_llm_start, 4),
+                    "total": round(time.monotonic() - t0, 4),
                 }
                 return []
         except Exception:
@@ -567,11 +598,11 @@ class SocraticWatchdog:
             self._generate_timings = {
                 "setup": round(t1 - t0, 4),
                 "lookup": round(t2 - t1, 4),
-                "llm_err": round(_time.monotonic() - t_llm_start, 4),
-                "total": round(_time.monotonic() - t0, 4),
+                "llm_err": round(time.monotonic() - t_llm_start, 4),
+                "total": round(time.monotonic() - t0, 4),
             }
             return []
-        t_llm_end = _time.monotonic()
+        t_llm_end = time.monotonic()
 
         # ── Parse: keep only assert lines ──
         tests = []
@@ -579,7 +610,7 @@ class SocraticWatchdog:
             stripped = line.strip()
             if stripped.startswith("assert "):
                 tests.append(stripped)
-        t_parse_end = _time.monotonic()
+        t_parse_end = time.monotonic()
 
         if not tests:
             if not quiet:
@@ -596,7 +627,7 @@ class SocraticWatchdog:
         # ── Cache write ──
         cache_file.write_text(json.dumps({"task": task, "tests": tests}, indent=2))
         self.hidden_test_cases = tests
-        t_write_end = _time.monotonic()
+        t_write_end = time.monotonic()
 
         self._generate_timings = {
             "setup":   round(t1 - t0, 4),
@@ -621,9 +652,7 @@ class SocraticWatchdog:
         This works for both human-written and AI-generated tests — they
         share the same cache namespace (keyed by task hash).
         """
-        import hashlib
-        cache_key = hashlib.sha256(task.strip().encode()).hexdigest()[:16]
-        cache_file = self._tests_cache_dir / f"{cache_key}.json"
+        cache_file = self._cache_file(task)
         if not cache_file.exists():
             return None
         try:
@@ -640,10 +669,8 @@ class SocraticWatchdog:
         tests, ``"generated"`` for AI-generated.  Pass ``quiet=True`` to
         suppress the confirmation print (caller emits its own indicator).
         """
-        import hashlib
-        cache_key = hashlib.sha256(task.strip().encode()).hexdigest()[:16]
         self._tests_cache_dir.mkdir(parents=True, exist_ok=True)
-        cache_file = self._tests_cache_dir / f"{cache_key}.json"
+        cache_file = self._cache_file(task)
         cache_file.write_text(json.dumps({
             "task": task.strip(),
             "tests": tests,
@@ -662,8 +689,6 @@ class SocraticWatchdog:
         Uses ``jupyter-mcp-cli`` if available (DIVE platform), otherwise
         returns ``None``.
         """
-        _TRIGGERS = ["task"]
-
         try:
             cells = self._get_notebook_cells()
             if not cells:
@@ -674,31 +699,7 @@ class SocraticWatchdog:
             if current_idx is None or current_idx == 0:
                 return None
 
-            # Scan upward for the task markdown, skipping helper cells
-            # (pure-magic / blank code) but stopping at real code.
-            cell_above = None
-            j = current_idx - 1
-            while j >= 0:
-                prev = cells[j]
-                if prev.get("cell_type") == "markdown":
-                    cell_above = prev
-                    break
-                prev_src = "".join(prev.get("source", []))
-                if any(ln.strip() and not ln.strip().startswith(("%", "!"))
-                       for ln in prev_src.splitlines()):
-                    break
-                j -= 1
-            if cell_above is not None and cell_above.get("cell_type") == "markdown":
-                text = "".join(cell_above.get("source", []))
-                # Skip very short cells (titles, dividers)
-                if len(text.strip()) > 30:
-                    # Must contain a task-trigger word
-                    text_lower = text.lower()
-                    if not any(t in text_lower for t in _TRIGGERS):
-                        return None
-                    # Clean up: remove HTML comments, strip whitespace
-                    text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
-                    return text.strip()
+            return _task_markdown_above(cells, current_idx)
         except Exception:
             pass
         return None

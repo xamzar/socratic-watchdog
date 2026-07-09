@@ -20,8 +20,11 @@ The module has three layers:
 
 from __future__ import annotations
 
+import glob
+import json
 import os
 import random
+import re
 import textwrap
 import time
 
@@ -29,7 +32,7 @@ from IPython import get_ipython
 from IPython.core.magic import Magics, magics_class, line_magic, cell_magic
 from IPython.display import display as ipy_display, HTML
 
-from ._core import _watchdog, DEFAULT_TTS_BACKEND
+from ._core import _watchdog, DEFAULT_TTS_BACKEND, _task_markdown_above
 
 # ── Shared helpers ────────────────────────────────────────────────────
 
@@ -39,8 +42,6 @@ def _print_debug_table(watchdog) -> None:
     Consolidates auto-detect, cache, cell, LLM, and TTS timings into
     a single aligned table instead of scattered one-liners.
     """
-    import os as _os
-
     t = watchdog._timings
     gt = watchdog._generate_timings
     ad = watchdog._auto_detect_time
@@ -80,7 +81,7 @@ def _print_debug_table(watchdog) -> None:
     # ── TTS ──
     tts_time = t.get("deliver", 0)
     if tts_time > 0:
-        backend = _os.environ.get("SOCRATIC_TTS_BACKEND", DEFAULT_TTS_BACKEND)
+        backend = os.environ.get("SOCRATIC_TTS_BACKEND", DEFAULT_TTS_BACKEND)
         _add("TTS", tts_time, backend)
 
     # ── Total ──
@@ -268,10 +269,6 @@ _SOCRATIC_PRAISES = [
     "You have proven yourself once more. Excellent.",
 ]
 
-def _random_praise() -> str:
-    """Return a random Socratic praise phrase."""
-    return random.choice(_SOCRATIC_PRAISES)
-
 
 def _resolve_thinking(handle, question: str):
     """Replace thinking indicator with final result.
@@ -296,7 +293,7 @@ def _resolve_thinking(handle, question: str):
                 "<strong>⚠️  Socrates is offline</strong><br>"
                 "No LLM API key configured — can't verify your code.<br>"
                 "Set <code>DEEPSEEK_API_KEY</code> in <code>.env</code> "
-                "or use <code>%socratic_tests</code> for local verification."
+                "or add a <code>#Test cases</code> cell below for local verification."
                 "</div>"
             ))
         elif question == "[TESTS_FAILED]":
@@ -318,7 +315,7 @@ def _resolve_thinking(handle, question: str):
             # Clear — _deliver() handles the question display
             handle.update(HTML(""))
         else:
-            praise = _random_praise()
+            praise = random.choice(_SOCRATIC_PRAISES)
             handle.update(HTML(
                 "<div style='"
                 "background:#d1fae5; border-left:4px solid #10b981;"
@@ -462,8 +459,6 @@ def _try_auto_detect(source: str) -> tuple[str | None, list[str] | None]:
 
     Tries jupyter-mcp-cli first, then scans .ipynb files in cwd.
     """
-    import json as _json, os as _os, re as _re, glob as _glob
-
     # Try jupyter-mcp-cli (DIVE platform)
     try:
         task = _watchdog.detect_task_from_notebook(source)
@@ -478,8 +473,8 @@ def _try_auto_detect(source: str) -> tuple[str | None, list[str] | None]:
     # strip %% and % magic lines from the notebook source before comparing.
     source_stripped = source.strip()
     try:
-        for nb_path in _glob.glob('*.ipynb'):
-            nb = _json.load(open(nb_path))
+        for nb_path in glob.glob('*.ipynb'):
+            nb = json.load(open(nb_path))
             cells = nb.get('cells', [])
             for idx, cell in enumerate(cells):
                 if cell.get('cell_type') != 'code':
@@ -488,43 +483,17 @@ def _try_auto_detect(source: str) -> tuple[str | None, list[str] | None]:
                 # Strip cell magics (%%socratic, %%time, etc.) and line
                 # magics (%some_magic) from the leading lines so the
                 # remaining code matches what IPython hands the magic.
-                cell_src = _re.sub(
-                    r'^(%%.*|%.*)\n', '', cell_src_raw, flags=_re.MULTILINE
+                cell_src = re.sub(
+                    r'^(%%.*|%.*)\n', '', cell_src_raw, flags=re.MULTILINE
                 ).strip()
                 if cell_src != source_stripped:
                     continue
-                # Found our cell — scan UPWARD for the task markdown.
-                # Skip helper cells in between (pure-magic / blank code cells
-                # like %socratic_clear_cache) but stop at real code so we
-                # never cross into an unrelated section above.
-                # Break (not return) on mismatch so we still check other
-                # notebooks — the first content match may not be the right one.
-                above = None
-                j = idx - 1
-                while j >= 0:
-                    prev = cells[j]
-                    if prev.get('cell_type') == 'markdown':
-                        above = prev
-                        break
-                    prev_src = ''.join(prev.get('source', []))
-                    has_real_code = any(
-                        ln.strip() and not ln.strip().startswith(('%', '!'))
-                        for ln in prev_src.splitlines()
-                    )
-                    if has_real_code:
-                        break  # real code above — don't cross it
-                    j -= 1  # helper / blank cell — keep looking up
-                if above is None:
+                # Found our cell — reuse the shared upward-scan for the task
+                # markdown.  None → no task above; break (not return) so we
+                # still check other notebooks with the same cell content.
+                task = _task_markdown_above(cells, idx)
+                if task is None:
                     break
-                text = ''.join(above.get('source', []))
-                if len(text.strip()) <= 30:
-                    break
-                if 'task' not in text.lower():
-                    break
-                text = _re.sub(r'<!--.*?-->', '', text, flags=_re.DOTALL)
-                task = text.strip()
-
-                # ── Check the cell below for "#Test cases" ──────────
                 tests = _extract_tests_from_cell_below(cells, idx)
                 return (task, tests)
     except Exception:
@@ -542,8 +511,6 @@ def _extract_tests_from_cell_below(
     - ``[list]`` → parsed assert lines (might be empty if the cell is just
       a heading with no actual test code)
     """
-    import re as _re
-
     # Look at the cell directly below
     if current_idx + 1 >= len(cells):
         return None  # no cell below → auto-generate
@@ -599,7 +566,7 @@ def _should_analyze() -> bool:
 
 @magics_class
 class SocraticMagics(Magics):
-    """%%socratic, %socratic_task, %socratic_tests, %socratic_watch, and friends."""
+    """%%socratic, %socratic_task, %socratic_generate_tests, %socratic_watch, and friends."""
 
     # ── socratic_task ──────────────────────────────────────────────────
 
@@ -634,7 +601,6 @@ class SocraticMagics(Magics):
             _watchdog.set_task(line)  # explicit task (disables auto-detect)
             print(f"🧠  Task set: “{line}”")
 
-    # ── socratic_tests (for track authors) ─────────────────────────────
 
     # ── socratic_generate_tests ────────────────────────────────────────
 

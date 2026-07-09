@@ -8,9 +8,10 @@ Load with::
     def my_code():
         ...
 
-Track authors can embed test cases::
+Track authors can embed test cases in a code cell *below* the %%socratic
+cell, marked ``#Test cases``::
 
-    %socratic_tests
+    #Test cases
     assert fib(0) == 0
     assert fib(1) == 1
 """
@@ -42,7 +43,7 @@ def load_ipython_extension(ipython):
         ──────────────────────────────
         •  %%socratic          — run a cell with Socratic analysis
         •  %socratic_task      — set goal (or 'auto' to read from markdown)
-        •  %socratic_tests     — embed test cases (--hidden for invisible)
+        •  #Test cases cell    — author tests in a code cell below (see %socratic_help)
         •  %socratic_generate_tests — auto-gen hidden tests from task
         •  %socratic_watch     — watch every cell
         •  %socratic_audio     — toggle TTS audio on/off
