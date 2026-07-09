@@ -577,7 +577,11 @@ def _extract_tests_from_cell_below(
 # ── Debounce (for auto-watch mode) ────────────────────────────────────
 
 _LAST_ANALYSIS_TIME: float = 0.0
-_DEBOUNCE_SECONDS: float = 3.0
+# Debounce window for auto-watch mode. Override with SOCRATIC_DEBOUNCE (seconds).
+try:
+    _DEBOUNCE_SECONDS: float = float(os.environ.get("SOCRATIC_DEBOUNCE", "3.0"))
+except ValueError:
+    _DEBOUNCE_SECONDS = 3.0
 
 
 def _should_analyze() -> bool:
@@ -992,18 +996,25 @@ class SocraticMagics(Magics):
                 (no comments or code before it)
             ─────────────────────────────────────
             %%socratic          Run a cell with Socratic analysis
+            %socratic_task     Set the goal (or 'auto' / 'clear')
+            %socratic_generate_tests  LLM writes hidden tests from the task
             %socratic_watch    Watch every cell (on/off)
             %socratic_off      Stop watching
             %socratic_reset    Clear Socrates's context
             %socratic_stats    Show timing breakdown of last analysis
             %socratic_audio    Toggle TTS audio on/off
             %socratic_model    Select LLM model (e.g. deepseek-chat, gpt-4o)
+            %socratic_style    Switch brief / verbose questioning
             %socratic_debug    Toggle debug trace (timing, model, TTS info)
             %socratic_auto_tests  Auto-generate tests on every %socratic_task
             %socratic_explore   Toggle exploration mode (free experimentation)
             %socratic_cache    Inspect generated-tests cache
             %socratic_clear_cache  Clear generated-tests cache (for demos)
             %socratic_help     This help
+
+            **Author-written tests:** put a code cell *below* your %%socratic
+            cell, first line `#Test cases`, then `assert` lines. They run as
+            hidden tests — pass = confetti, fail = a sharper question.
 
             **Quick start (explicit task)**
               1.  %socratic_task Build a BMI calculator

@@ -238,6 +238,7 @@ hidden, use LLM-generated tests instead:
 | Env var | Default | Description |
 |---|---|---|
 | `SOCRATIC_DEBUG` | (unset) | Set to `1` to print timing breakdown after each analysis |
+| `SOCRATIC_DEBOUNCE` | `3.0` | Seconds between auto-watch analyses (min gap in `%socratic_watch on` mode) |
 | `SOCRATIC_TESTS_CACHE` | `~/.hermes/socratic_tests_cache/` | Cache directory for auto-generated test cases |
 
 ## Architecture
