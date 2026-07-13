@@ -17,6 +17,8 @@ and celebrates with confetti when you get it right.
 
 **▶️ Try it live:** [open the demo in Google Colab](https://colab.research.google.com/github/xamzar/socratic-watchdog/blob/main/demo_colab.ipynb) — no install, runs in your browser.
 
+**🧪 Test every feature yourself:** [open the manual test notebook in Colab](https://colab.research.google.com/github/xamzar/socratic-watchdog/blob/main/demo_manual_test.ipynb) — one cell per feature, each with an "Expected" note so you can confirm it works (includes a Colab install cell).
+
 ## Features
 
 | Feature | Description |
