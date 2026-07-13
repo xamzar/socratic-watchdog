@@ -18,10 +18,11 @@ same session; the rest are proposals for review.
 2. **Session transcript export (`%socratic_export`).** There are already
    `~/socratic-sessions/session-*` dirs — dump the cell/question/verdict history
    to JSON/Markdown for grading and review. Read-only side effect, no core risk.
-3. **Configurable debounce.** `_DEBOUNCE_SECONDS` is hard-coded to 3.0. Expose
-   via `SOCRATIC_DEBOUNCE` env var + `%socratic_watch on 5`. One-line read.
-4. **`#Test cases` marker in help + a `%socratic_check` dry-run** that shows the
-   student which tests would run without submitting code.
+3. ✅ **Configurable debounce.** `SOCRATIC_DEBOUNCE` env var now overrides the
+   3.0s default (`magics.py:546`). Follow-up: still no inline `%socratic_watch on 5`
+   form — watch only takes `on`/`off`.
+4. **`%socratic_check` dry-run** that shows the student which tests would run
+   without submitting code. (`#Test cases` marker is already in `%socratic_help`.)
 
 ## Medium (worth a design pass)
 5. **Per-student progress state.** Persist which tasks a student has passed
@@ -31,9 +32,9 @@ same session; the rest are proposals for review.
    system prompt so questions target specific learning objectives.
 7. **Non-blocking TTS.** Speak in a background thread so the confetti/subtitle
    renders instantly and audio catches up (edge-tts/kokoro are slow).
-8. **Colab/VS Code auto-detect fallback.** `detect_task_from_notebook` relies on
-   reading the .ipynb from disk; in Colab the file isn't on the local FS. Detect
-   the environment and degrade gracefully to explicit-task mode with a clear msg.
+8. ✅ **Colab auto-detect fallback.** `_get_colab_cells` (`_core.py:1025`) reads
+   cells via the Colab kernel message API when the .ipynb isn't on local FS.
+   Follow-up: VS Code notebooks still fall back to explicit-task mode.
 
 ## Larger / speculative (needs product sign-off)
 9. **Multi-language support** — the persona + praise phrases are English-only.
@@ -43,8 +44,7 @@ same session; the rest are proposals for review.
     struggled with.
 
 ## Known cleanups / tech debt
-- `pyproject.toml` version is `0.3.0`; the honest-failure + indicator work is a
-  user-visible behavior change → bump to `0.4.0` before next publish.
+- ✅ Version bumped to `0.4.0` (`pyproject.toml`, `__init__.py`).
 - `~/wiki/drafts/socratic-watchdog.md` is empty; either delete it or make it
   point at the repo README (currently the single source of truth for the spec).
 - `demo_01_basics.ipynb` is 627 KB (embedded outputs) — strip outputs to shrink
