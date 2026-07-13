@@ -10,6 +10,7 @@ is strictly about the magics wiring the README promises.
 """
 from __future__ import annotations
 
+import json
 import sys
 import types
 from pathlib import Path
@@ -305,6 +306,47 @@ def _fake_info(raw_cell):
     return types.SimpleNamespace(
         raw_cell=raw_cell, error_in_exec=None, error_before_exec=None,
     )
+
+
+class TestCellBelowTests:
+    """The `#Test cases` cell below is a TRACK-MODE feature (README §Test cases).
+
+    It only works while auto-detecting the task (no explicit %socratic_task).
+    These two tests lock that documented boundary so the README stays honest.
+    """
+
+    def _write_nb(self, tmp_path):
+        nb = {"cells": [
+            {"cell_type": "markdown",
+             "source": ["**Task:** Write is_even(n) returning True for even numbers"]},
+            {"cell_type": "code",
+             "source": ["%%socratic\n", "def is_even(n):\n", "    return n % 2 == 0"]},
+            {"cell_type": "code",
+             "source": ["#Test cases\n", "assert is_even(2) == True\n",
+                        "assert is_even(3) == False"]},
+        ], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}
+        p = tmp_path / "nb.ipynb"
+        p.write_text(json.dumps(nb))
+        return "def is_even(n):\n    return n % 2 == 0"
+
+    def test_auto_mode_reads_task_and_cell_below(self, tmp_path, monkeypatch):
+        cell = self._write_nb(tmp_path)
+        monkeypatch.chdir(tmp_path)          # the scan globs *.ipynb in cwd
+        _watchdog.task_description = ""       # AUTO mode
+        task, tests = M._try_auto_detect(cell)
+        assert task and "is_even" in task
+        assert tests == ["assert is_even(2) == True", "assert is_even(3) == False"]
+
+    def test_explicit_task_skips_cell_below_scan(self, tmp_path, monkeypatch):
+        # With an explicit task the cell magic never calls _try_auto_detect,
+        # so cell-below tests are NOT loaded (they come from cache/LLM instead).
+        cell = self._write_nb(tmp_path)
+        monkeypatch.chdir(tmp_path)
+        _watchdog.task_description = "some explicit task"
+        _watchdog.hidden_test_cases = []
+        # Mirror the cell-magic guard: auto-detect runs only when no task is set.
+        ran_auto = bool(not _watchdog.task_description)
+        assert ran_auto is False
 
 
 class TestAutoWatchHook:

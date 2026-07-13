@@ -138,11 +138,22 @@ The **Socrates persona** instructs the LLM to:
 Author-written test cases let Socrates check correctness deterministically — no LLM
 guesswork. Put them in a **code cell directly below** your `%%socratic` cell, marked
 with `#Test cases` (also accepted: `#Tests`, `#test_cases`). The watchdog scans that
-cell, runs its `assert` lines as hidden tests, and caches them on disk keyed by task:
+cell, runs its `assert` lines as hidden tests, and caches them on disk keyed by task.
+
+> **Cell-below tests are a track-mode feature — use `%socratic_task auto`, not an
+> explicit task.** The watchdog finds the cell below only while auto-detecting the
+> task from the markdown above (it locates your cell in the saved notebook, then
+> reads the cell after it). If you set an explicit `%socratic_task`, that scan is
+> skipped and the tests come from the cache or the LLM instead. Save the notebook
+> so the on-disk scan can see the cells.
 
 ```python
 %load_ext socratic_watchdog
-%socratic_task Write a function that checks if a number is even
+%socratic_task auto        # track mode — read the task from the markdown above
+```
+
+```markdown
+**Task:** Write a function `is_even(n)` that returns True for even numbers.
 ```
 
 ```python
