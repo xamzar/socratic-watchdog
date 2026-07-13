@@ -60,7 +60,9 @@ def build_notebook_context(max_chars: int = 6000) -> str:
     lines = []
     for i, cell in enumerate(cells):
         kind = cell.get("cell_type", "code")
-        src = (cell.get("source") or "").rstrip()
+        # nbformat 'source' is usually a list of lines; core joins it the same way.
+        raw = cell.get("source") or ""
+        src = ("".join(raw) if isinstance(raw, list) else raw).rstrip()
         if src:
             lines.append(f"# --- cell {i} ({kind}) ---\n{src}")
     ctx = "\n\n".join(lines)
@@ -122,10 +124,24 @@ def load_ipython_extension(ipython):  # so `%load_ext experimental.notebook_chat
 
 
 def demo() -> None:
-    """Self-check: context builder truncates and tolerates a missing notebook."""
-    import socratic_watchdog  # noqa: F401 — ensures _watchdog import path is valid
-    ctx = build_notebook_context(max_chars=50)
-    assert isinstance(ctx, str) and len(ctx) <= 50
+    """Self-check: context builder handles nbformat list-source cells + truncation."""
+    from socratic_watchdog import _watchdog
+    # nbformat cells: 'source' is a LIST of lines (both code and markdown).
+    fake = [
+        {"cell_type": "markdown", "source": ["# Task\n", "reverse a string"]},
+        {"cell_type": "code", "source": ["def rev(s):\n", "    return s[::-1]"]},
+        {"cell_type": "code", "source": "assert rev('ab') == 'ba'"},  # str too
+    ]
+    orig = _watchdog._get_notebook_cells
+    _watchdog._get_notebook_cells = lambda: fake
+    try:
+        ctx = build_notebook_context()
+        assert "reverse a string" in ctx        # markdown list joined
+        assert "return s[::-1]" in ctx          # code list joined, no crash
+        assert "assert rev" in ctx              # plain-string source also works
+        assert build_notebook_context(max_chars=20).__len__() <= 20  # truncation
+    finally:
+        _watchdog._get_notebook_cells = orig
     assert ask("") == ""            # empty question short-circuits, no LLM call
     print("notebook_chat: ok")
 
