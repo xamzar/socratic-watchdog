@@ -43,3 +43,8 @@ Homepage = "https://github.com/xamzar/socratic-watchdog"
 
 [tool.hatch.build.targets.wheel]
 packages = ["socratic_watchdog"]
+
+[tool.hatch.build.targets.sdist]
+# Keep the source dist lean: demo notebooks carry MBs of embedded outputs, and
+# experimental/ isn't importable from an installed package (repo-only proposals).
+exclude = ["*.ipynb", "demo_for_prof", "experimental", ".github", ".env*"]
