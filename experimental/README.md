@@ -16,6 +16,8 @@ speech-to-text, and turning this into an in-notebook AI chat.**
 | `tts_coqui.py` | A **better-sounding, emotion-aware voice** for Socrates using [Coqui TTS](https://github.com/coqui-ai/tts). Praise sounds warm, a firm hint sounds firm. | "better open-source TTS than Edge TTS… emotion expressed through voice" |
 | `stt_whisper.py` | **Talk instead of type** — transcribes your microphone into text with faster-whisper (uses the GPU if you have one). | "STT… transcribing our voice to send to the agent… needs GPU" |
 | `notebook_chat.py` | A plain **`%ask <question>`** chat that answers directly (not Socratic), and can *see your whole notebook including the test cells below*. Optionally reads the answer aloud. | "talk to the AI in the notebook… replace jupyter-ai magics… complete view of the notebook including the test cells to come" |
+| `gamification.py` | **Streaks, XP & achievement badges** computed from the session log the package already writes — a `%socratic_progress` scoreboard + a "🔥 3 in a row!" shout on the confetti path. | "make it more entertaining for students" |
+| `personas.py` | **Swappable Socrates personalities** (Yoda, Sherlock, pirate, coach, robot…) — same teaching rules, different voice + praise. A `%socratic_persona <name>` toggle. | "giving personalities to Hermes" |
 
 Put `stt_whisper` + `notebook_chat` + any TTS backend together and you get a
 **full in-notebook verbal AI chat**: speak → transcribe → LLM → spoken answer.
@@ -104,6 +106,22 @@ key, no endpoint. Only the LLM chat needs a key.
    feed its findings back into `SOCRATIC_TEST_GEN_SYSTEM` / the persona prompt so
    the agent improves from real student interactions. This is the concrete
    "reuse Hermes on dive" path — Hermes reads the report, edits the prompt seam.
+
+## Round 2 — fun ideas worth building later (not yet written)
+
+- **Class leaderboard.** `gamification.py` already computes per-student XP/streaks
+  from the logs; aggregate across students into a teacher-facing ranking (ties
+  into the classroom-dashboard idea and the nightly report).
+- **Lesson progress bar.** Persist which tasks a student has passed (keyed by
+  task hash, same cache dir) and show `▓▓▓▓░░ 4/6` for a worksheet.
+- **Daily challenge / "boss task".** One timed task a day; beating it extends a
+  daily streak — the single most reliable retention hook for teenagers.
+- **Victory jingles.** A tiny bundled WAV per streak tier, played alongside
+  confetti (separate from TTS — pure celebration audio).
+- **Persona voices via Coqui.** Wire `personas.py`'s per-persona voice into
+  `tts_coqui.py` so Yoda *sounds* like Yoda, not just reads like him.
+- **"Explain like I'm five" button.** A one-click `%eli5` that re-asks the last
+  question at a simpler reading level — reuses `notebook_chat.ask`.
 
 ## What's NOT here because it already exists
 
