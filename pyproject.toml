@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "socratic-watchdog"
-version = "0.4.0"
+version = "0.4.1"
 description = "A Socratic TTS coding assistant that watches your Jupyter notebook and speaks guiding questions when you go off-track"
 readme = "README.md"
 requires-python = ">=3.9"

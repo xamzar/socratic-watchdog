@@ -20,7 +20,7 @@ import textwrap
 
 from ._core import SocraticWatchdog, _watchdog
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 __all__ = [
     "SocraticWatchdog",

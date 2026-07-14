@@ -456,11 +456,18 @@ def _try_auto_detect(source: str) -> tuple[str | None, list[str] | None]:
 
     Tries jupyter-mcp-cli first, then scans .ipynb files in cwd.
     """
-    # Try jupyter-mcp-cli (DIVE platform)
+    # Try live notebook cells (Colab frontend, or jupyter-mcp-cli / DIVE).
+    # Must scan the cell below for #Test cases here too — otherwise Colab
+    # (which has no local .ipynb for the glob fallback below) always misses
+    # them and needlessly auto-generates tests with the LLM.
     try:
-        task = _watchdog.detect_task_from_notebook(source)
-        if task:
-            return (task, None)
+        cells = _watchdog._get_notebook_cells()
+        if cells:
+            idx = _watchdog._find_current_cell(cells, source)
+            if idx is not None:
+                task = _task_markdown_above(cells, idx)
+                if task:
+                    return (task, _extract_tests_from_cell_below(cells, idx))
     except Exception:
         pass
 
