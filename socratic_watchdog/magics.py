@@ -278,13 +278,18 @@ def _resolve_thinking(handle, question: str):
       with a green praise box + confetti + TTS.
     * **[LLM_UNAVAILABLE]** → no API key configured, can't verify correctness.
       Show a warning instead of false praise.
+
+    Every box below pins an explicit ``color:`` next to its ``background:``.
+    JupyterLab's dark theme only flips the *inherited* text colour, so a box
+    that sets a light background and leaves the text alone renders white on
+    white.  Drop the ``color`` and the message vanishes for half the class.
     """
     try:
         if question == "[LLM_UNAVAILABLE]":
             handle.update(HTML(
                 "<div style='"
                 "background:#fef3c7; border-left:4px solid #f59e0b;"
-                "padding:12px 16px; margin:8px 0; border-radius:4px;"
+                "padding:12px 16px; margin:8px 0; border-radius:4px; color:#1f2937;"
                 "font-size:15px; line-height:1.5;'"
                 ">"
                 "<strong>⚠️  Socrates is offline</strong><br>"
@@ -300,7 +305,7 @@ def _resolve_thinking(handle, question: str):
             handle.update(HTML(
                 "<div style='"
                 "background:#fee2e2; border-left:4px solid #ef4444;"
-                "padding:12px 16px; margin:8px 0; border-radius:4px;"
+                "padding:12px 16px; margin:8px 0; border-radius:4px; color:#1f2937;"
                 "font-size:15px; line-height:1.5;'"
                 ">"
                 "<strong>❌  Not passing yet</strong><br>"
@@ -316,7 +321,7 @@ def _resolve_thinking(handle, question: str):
             handle.update(HTML(
                 "<div style='"
                 "background:#d1fae5; border-left:4px solid #10b981;"
-                "padding:12px 16px; margin:8px 0; border-radius:4px;"
+                "padding:12px 16px; margin:8px 0; border-radius:4px; color:#1f2937;"
                 "font-size:15px; line-height:1.5;'"
                 ">"
                 f"<strong>🏛️  Socrates says:</strong><br>{praise}"
@@ -383,7 +388,16 @@ def _show_confetti():
 
 
 def _extract_error(result) -> str:
-    """Return a single-line traceback string from a cell execution result."""
+    """Return a single-line traceback string from a cell execution result.
+
+    Only the exception type and message — the stack frames are dropped on
+    purpose, since they crowd the student's actual code out of the prompt.
+
+    # ponytail: this and _extract_error_from_info below differ only in which
+    # object they read .error_in_exec off. Taking the exception itself as the
+    # argument would collapse them into one function; not worth the churn
+    # until a third caller shows up.
+    """
     if result.error_in_exec:
         import traceback
         return "".join(traceback.format_exception_only(
@@ -427,7 +441,7 @@ def _deliver(question: str) -> None:
     ipy_display(HTML(
         "<div style='"
         "background:#fef3c7; border-left:4px solid #f59e0b;"
-        "padding:12px 16px; margin:8px 0; border-radius:4px;"
+        "padding:12px 16px; margin:8px 0; border-radius:4px; color:#1f2937;"
         "font-size:15px; line-height:1.5;'"
         ">"
         "<strong>🏛️  Socrates asks:</strong><br>"
@@ -454,7 +468,14 @@ def _try_auto_detect(source: str) -> tuple[str | None, list[str] | None]:
         * ``[]``   → could not find notebook (no-op)
         * ``[list]`` → parsed test assertions from the cell below
 
-    Tries jupyter-mcp-cli first, then scans .ipynb files in cwd.
+    Sources the cell list from the Colab frontend or jupyter-mcp-cli (via
+    ``_watchdog._get_notebook_cells``), then falls back to globbing .ipynb
+    files in the working directory.
+
+    The disk fallback is only as fresh as the last save: edit a cell, run it
+    without saving, and the file still holds the old text, so the match below
+    fails and auto-detection silently gives up.  The two live sources do not
+    have this problem.
     """
     # Try live notebook cells (Colab frontend, or jupyter-mcp-cli / DIVE).
     # Must scan the cell below for #Test cases here too — otherwise Colab

@@ -34,7 +34,9 @@ dependencies = [
 
 [project.optional-dependencies]
 edge-tts = ["edge-tts>=7.0.0"]
-kokoro = ["kokoro>=0.9.0"]
+# kokoro supports 3.10–3.12 only; without the marker this extra makes the
+# project's own >=3.9 range unresolvable and `uv run` refuses to sync.
+kokoro = ["kokoro>=0.9.0; python_version>='3.10' and python_version<'3.13'"]
 dev = ["pytest", "jupyterlab"]
 
 [project.urls]
@@ -47,4 +49,4 @@ packages = ["socratic_watchdog"]
 [tool.hatch.build.targets.sdist]
 # Keep the source dist lean: demo notebooks carry MBs of embedded outputs, and
 # experimental/ isn't importable from an installed package (repo-only proposals).
-exclude = ["*.ipynb", "demo_for_prof", "experimental", ".github", ".env*"]
+exclude = ["*.ipynb", "demo_for_prof", "experimental", "tutorial", ".github", ".env*"]

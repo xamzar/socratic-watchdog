@@ -13,9 +13,11 @@
   specialists, DeepSeek-backed) — the *same model family* Socratic uses. So
   Hermes isn't a new brain, it's an **orchestration + memory + evaluation layer**
   around the brain we already call.
-- **Doc-drift to fix regardless:** the README advertises a
-  `SOCRATIC_LLM_BACKEND=hermes` CLI fallback. That backend **does not exist in
-  the code.** Either build it (idea 1) or drop the claim.
+- ~~**Doc-drift to fix regardless:** the README advertises a
+  `SOCRATIC_LLM_BACKEND=hermes` CLI fallback.~~ **Resolved** — the README now
+  says the Hermes backend is planned but not implemented, and the dead
+  `SOCRATIC_LLM_BACKEND` line is out of `.env.example`. The env var is free
+  for idea 1 to claim.
 
 ## The ladder of integration (cheapest first)
 
@@ -33,7 +35,7 @@ the student's actual code?* If it fails, regenerate. Cheap quality gate that
 catches the LLM's worst misses (giving away the fix) before a student sees them.
 Runs async so it doesn't slow the happy path.
 
-### 3. Session memory + nightly professor report  ·  partially BUILT
+### 3. Session memory + nightly professor report  ·  cron SHIPPED (2026-07-17)
 The enabling primitive now exists: every `analyze()` appends one JSON line to a
 daily log (`_core._log_session`, on by default, `SOCRATIC_SESSION_LOG=off` to
 disable). `scripts/nightly_report.py` reads a day's log and emits a Markdown
@@ -41,12 +43,15 @@ report: per-student stats, stuck-loop detection, offline-LLM flags, and — when
 API key is present — an **LLM answer-leak review** that flags any question that
 gave away the fix instead of guiding.
 
-Run it by hand, or nightly via cron:
+Run it by hand, or nightly via cron. **Live on core since 2026-07-17:**
 
 ```cron
-# 6am daily: yesterday's report, mailed/saved for the professor
-0 6 * * *  cd /path/to/socratic-watchdog && .venv/bin/python scripts/nightly_report.py --out reports/$(date -d yesterday +\%F).md
+# 06:05 daily on gcp-core: yesterday's report → ~/wiki/socratic-reports/<date>.md
+5 6 * * *  cd ~/playground/socratic-watchdog && .venv/bin/python scripts/nightly_report.py --out ~/wiki/socratic-reports/$(date -d yesterday +\%F).md
 ```
+
+Caveat: logs are per-machine (`~/.hermes/socratic-sessions/`), so this reviews
+only core's students until log aggregation exists.
 
 **Where Hermes comes in next:**
 - Swap `review_answer_leaks()`'s LLM call for a Hermes *pedagogy specialist* so

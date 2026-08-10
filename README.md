@@ -278,6 +278,18 @@ socratic_watchdog/
 └── __init__.py     # %load_ext entry point
 ```
 
+**Seeing the notebook** is the part that surprises people. A kernel doesn't know
+about the document driving it, so `_get_notebook_cells()` tries three sources and
+takes the first that answers: the Colab frontend → `jupyter-mcp-cli` (JupyterHub /
+DIVE) → globbing the `.ipynb` off disk. The layer is read-only; nothing here
+writes cells back. [`ARCHITECTURE.md`](ARCHITECTURE.md#how-we-see-the-notebook)
+has the table and the failure modes.
+
+Alongside the package, [`tutorial/`](tutorial/) holds the CS1302 teaching
+material — a standalone, minimal version of those primitives built as
+spec-plus-failing-test so a small model can implement them one at a time. Not
+importable from an install, not shipped in the sdist.
+
 ## Classroom reports
 
 Every analysed cell appends one JSON line to

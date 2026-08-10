@@ -102,6 +102,11 @@ TEST_GEN_SYSTEM = textwrap.dedent("""\
       0.3`). Prefer integer examples, or `abs(result - expected) < 1e-9`.
     - Stay in scope: test only the behavior the task describes. No hidden edge
       cases the task never mentions (weird types, huge inputs, error handling).
+    - Only assert an expected value you can compute by hand and are CERTAIN of.
+      Never invent an answer for an input where the correct result is undefined
+      or ambiguous. If the task doesn't define an input, don't test it —
+      e.g. for "n-th Fibonacci number" do NOT write `assert fib(-1) == -1`;
+      negative n is undefined, so skip it entirely.
     - Use simple, obvious inputs a beginner would recognise as correct.
 """)
 
@@ -112,7 +117,11 @@ def _task_markdown_above(cells: list[dict], idx: int) -> Optional[str]:
     Skips helper cells (pure-magic / blank code) but stops at real code so we
     never cross into an unrelated section above. Returns the cleaned markdown
     text only if it is long enough and mentions a task-trigger word, else None.
-    Shared by both notebook-sourcing paths (jupyter-mcp-cli and local .ipynb).
+
+    Shared by all three notebook-sourcing paths — the Colab frontend and
+    jupyter-mcp-cli (both via ``_get_notebook_cells``) and the local .ipynb
+    glob in ``magics._try_auto_detect`` — so it takes the cell list as an
+    argument and never fetches one itself.
     """
     above = None
     j = idx - 1
@@ -764,8 +773,11 @@ class SocraticWatchdog:
         (e.g. "Task", "Exercise", "Write a function").  This prevents
         unrelated markdown (headings, notes) from being treated as a task.
 
-        Uses ``jupyter-mcp-cli`` if available (DIVE platform), otherwise
-        returns ``None``.
+        Sources the cell list from the Colab frontend or ``jupyter-mcp-cli``
+        (see ``_get_notebook_cells``).  Returns ``None`` when neither is
+        available — the on-disk .ipynb fallback lives one layer up, in
+        ``magics._try_auto_detect``, because it has to match the cell by
+        content across every notebook in the directory.
         """
         try:
             cells = self._get_notebook_cells()
@@ -1020,7 +1032,15 @@ class SocraticWatchdog:
                 return stripped.strip('"').strip("'")
         return ""
 
-    # ── Notebook introspection (jupyter-mcp-cli) ────────────────────────
+    # ── Notebook introspection (Colab → jupyter-mcp-cli → disk) ─────────
+    #
+    # A running kernel does not natively know about the notebook driving it,
+    # and no single way of asking works everywhere: Colab never writes an
+    # .ipynb, JupyterHub has no ``google.colab``, a bare kernel has neither.
+    # So we try sources in order and take the first that answers.  The third
+    # (glob the .ipynb off disk) lives in ``magics._try_auto_detect``.
+    #
+    # This layer is read-only.  Nothing in the package writes cells back.
 
     def _get_colab_cells(self) -> list[dict]:
         """Live notebook cells from Google Colab, or [] if not running in Colab.
@@ -1045,6 +1065,16 @@ class SocraticWatchdog:
         Sources, in order: Colab frontend → cached scan → jupyter-mcp-cli.
         Colab cells are fetched fresh every call (the notebook grows as the
         student adds cells), so they are never cached.
+
+        The jupyter-mcp-cli result *is* cached for the session, which means
+        cells added after the first call are invisible until the kernel
+        restarts.  That is a deliberate trade against shelling out twice per
+        cell run; it is also the first thing to suspect when auto-detection
+        works early in a session and stops later.
+
+        Returns ``[]`` when no source answers.  That is a normal state (plain
+        ``python``, a test run, JupyterLab without the CLI installed), not an
+        error — every caller treats an empty list as "no notebook context".
         """
         colab_cells = self._get_colab_cells()
         if colab_cells:
@@ -1088,6 +1118,20 @@ class SocraticWatchdog:
         IPython strips the cell magic line (%%socratic) from the source
         handed to the magic, but jupyter-mcp-cli returns the FULL cell
         source.  We strip magic lines here so exact matching works.
+
+        Two known weaknesses, both benign (a miss returns None and callers
+        fall back to "no notebook context"), neither worth fixing until
+        something depends on the index being right:
+
+        * The fallback score compares characters *positionally*, so it only
+          rewards text that stayed put.  Insert one character at the top of
+          a cell and the score collapses toward 0 — the fuzzy path mostly
+          does not do what its 0.7 threshold suggests.  Use
+          ``difflib.SequenceMatcher`` if this ever needs to work.
+        * Two cells with identical source both match; we return the first.
+
+        # ponytail: exact match carries this today; swap in SequenceMatcher
+        # if a caller ever needs the index to survive an unsaved edit.
         """
         current_normalized = current_source.strip()
         best_idx = None

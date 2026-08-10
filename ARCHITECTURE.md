@@ -23,6 +23,10 @@ The split is deliberate: **all the logic lives in `_core.py` with no Jupyter
 dependency**, so you can test it with plain `pytest` and no notebook. `magics.py`
 is only the presentation layer. When in doubt, put logic in `_core.py`.
 
+Two directories sit beside the package and are **not** part of it:
+`experimental/` (proposals, not importable from an install) and `tutorial/`
+(teaching material — see the last section).
+
 ## How one `%%socratic` cell flows
 
 ```
@@ -92,13 +96,61 @@ Return values from `analyze()` are a tiny protocol — memorise these four:
 - `speak()` + `_speak_espeak/_edge/_kokoro()` — the three TTS backends.
 - `detect_task_from_notebook()` + module-level `_task_markdown_above()` — task
   auto-detection from the notebook.
+- `_get_notebook_cells()` — see below.
+
+## How we see the notebook
+
+A running kernel does not natively know about the notebook driving it, and no
+single way of asking works everywhere. So `_get_notebook_cells()` tries three
+sources and takes the first that answers:
+
+| Order | Source | Where | Fresh? |
+|---|---|---|---|
+| 1 | Colab frontend — `google.colab._message` | `_core.py` | yes, refetched every call |
+| 2 | `jupyter-mcp-cli` subprocess (JupyterHub / DIVE) | `_core.py` | cached for the session |
+| 3 | glob `*.ipynb` off disk | `magics._try_auto_detect` | only as fresh as the last save |
+
+Two consequences worth knowing before you debug anything positional:
+
+- **Source 3 is stale by nature.** Edit a cell, run it without saving, and the
+  file still holds the old text — so `_find_current_cell` misses and
+  auto-detection quietly gives up. Not a bug you can fix in the matcher.
+- **This layer is read-only.** Nothing in the package writes cells back. If you
+  ever need to, the kernel cannot reach into the document; it can only send the
+  frontend a `set_next_input` payload, which addresses the current cell or a new
+  one below it and nothing else.
+
+An empty list is a normal answer, not an error — every caller reads `[]` as
+"no notebook context" and carries on.
 
 ## Making a change — the checklist
 
 1. Is it logic? Put it in `_core.py`. Is it how it *looks*? `magics.py`.
 2. Add or update a test in `tests/test_socratic_watchdog_core.py`. The suite
    runs with no notebook and no network (the LLM is mocked) — keep it that way.
-3. Run `pytest -q` (58+ tests, all green).
+3. Run `pytest -q` (186 tests, all green — that count includes `tutorial/`).
 4. If you changed behavior, update `README.md` (the spec) in the same commit.
 5. Prefer the standard library over new dependencies — the only required dep is
    `ipython`, and we'd like to keep it that way.
+
+## `tutorial/` — the CS1302 teaching material
+
+Not part of the package. Nothing in `socratic_watchdog/` imports it, and it is
+excluded from the sdist.
+
+Four modules, one per layer: `nbkit.py` (read + write), `nbkit_ask.py` (the
+model), `nbkit_hooks.py` (triggers), each with its own test file. `nbkit.py` is
+a stripped, standalone reimplementation of the notebook primitives above
+(`get_cells`, `get_current_cell`, `format_error`, …) plus the write half this
+package never needed; `nbkit_ask.py` is `_call_llm` with the two-endpoint
+classroom fallback added; `nbkit_hooks.py` is `_post_run_cell_hook` generalised.
+
+It exists because a 12B model cannot build socratic-watchdog from one prompt,
+but it *can* write `get_current_cell()` given a docstring and a failing test —
+so the CS1302 notebooks hand out one function at a time, and the test files are
+the failing tests that come with them.
+
+If you change how this package reads the notebook, `nbkit.py` does not
+automatically follow — it is a teaching copy, deliberately simpler, and it
+documents where it diverges. Keep the divergences honest rather than syncing
+them.
