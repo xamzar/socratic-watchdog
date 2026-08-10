@@ -1,5 +1,18 @@
 # The notebooks
 
+**Try it in the browser, nothing to install:**
+
+[![Open 00 in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/xamzar/socratic-watchdog/blob/main/tutorial/notebooks/00_primitives.ipynb)
+&nbsp;**00 · Primitives** — no API key needed, no endpoint, no install. Start here.
+
+[![Open 01 in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/xamzar/socratic-watchdog/blob/main/tutorial/notebooks/01_explainer.ipynb)
+&nbsp;**01 · Explainer** — needs a model endpoint; fill in the block in the first cell.
+
+Colab is worth using for notebook 00 specifically, because Colab is the one
+place where the disk fallback genuinely does not work — there is no `.ipynb`
+file for the kernel to read. `cells_from_colab()` is what answers instead, and
+you get to watch that happen rather than take it on trust.
+
 Work through them in order. Each one adds exactly one capability, and each one
 ends with something that runs.
 

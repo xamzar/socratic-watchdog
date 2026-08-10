@@ -1,5 +1,8 @@
 # CS1302 — building an AI package in Jupyter
 
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/xamzar/socratic-watchdog/blob/main/tutorial/notebooks/00_primitives.ipynb)
+&nbsp;Start with notebook 00 — no install, no API key, runs in the browser.
+
 Teaching material for the summer class and Semester A CS1302A. Not part of the
 `socratic_watchdog` package: nothing in `socratic_watchdog/` imports it, and it
 is excluded from the sdist.
