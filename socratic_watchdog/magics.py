@@ -21,6 +21,7 @@ The module has three layers:
 from __future__ import annotations
 
 import glob
+import html
 import json
 import os
 import random
@@ -142,7 +143,7 @@ def _announce_test_source(
         print("🧪  Tests: none generated — Socrates will judge via the LLM")
     else:
         print("🧪  Tests: none, and no LLM available — can't verify this cell "
-              "(set DEEPSEEK_API_KEY, or add a #Tests cell below)")
+              "(set DEEPSEEK_API_KEY, or add a #Test cases cell below)")
 
 
 def _show_thinking():
@@ -431,6 +432,13 @@ def _audio_on() -> bool:
     return os.environ.get("SOCRATIC_AUDIO", "on").strip().lower() != "off"
 
 
+def _md_inline(text: str) -> str:
+    """Escape model text for HTML, rendering its `code` and *emphasis*."""
+    text = html.escape(text)
+    text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
+    return re.sub(r"\*\*?([^*]+)\*\*?", r"<em>\1</em>", text)
+
+
 def _deliver(question: str) -> None:
     """Display the Socratic question as a styled subtitle + TTS audio.
 
@@ -445,13 +453,13 @@ def _deliver(question: str) -> None:
         "font-size:15px; line-height:1.5;'"
         ">"
         "<strong>🏛️  Socrates asks:</strong><br>"
-        f"{question}"
+        f"{_md_inline(question)}"
         "</div>"
     ))
     if not _audio_on():
         return
     try:
-        audio = _watchdog.speak(question)
+        audio = _watchdog.speak(re.sub(r"[`*]", "", question))
         if audio is not None:
             ipy_display(audio)
     except Exception:
@@ -1051,7 +1059,11 @@ class SocraticMagics(Magics):
         # so the user sees task first, then cache/generate status.
         resolved = _watchdog._resolve_task(cell)
         if resolved:
-            preview = resolved if len(resolved) <= 120 else resolved[:117] + "..."
+            # a markdown task arrives as "### Task\nWrite `fib(n)`..." — show the body on one line
+            body = [l.strip() for l in resolved.splitlines()
+                    if l.strip() and not l.lstrip().startswith("#")]
+            flat = " ".join(body) or resolved.strip().lstrip("#").strip()
+            preview = flat if len(flat) <= 120 else flat[:117] + "..."
             print(f"🧠  Task: {preview}")
 
         # Resolve tests in priority order: cache → human-written → AI-generate.

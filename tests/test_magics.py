@@ -374,3 +374,10 @@ class TestAutoWatchHook:
         _watchdog.task_description = "use a local variable"
         _post_run_cell_hook(_fake_info("g = 1\ndef f():\n    global g"))
         assert delivered == ["Why a global here?"]
+
+
+def test_md_inline_escapes_and_renders():
+    from socratic_watchdog.magics import _md_inline
+    assert _md_inline("what if `n < 2`?") == "what if <code>n &lt; 2</code>?"
+    assert _md_inline("what do *those* calls ask?") == "what do <em>those</em> calls ask?"
+    assert _md_inline("a <b> tag") == "a &lt;b&gt; tag"

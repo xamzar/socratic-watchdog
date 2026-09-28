@@ -12,6 +12,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import textwrap
 import time
@@ -114,8 +115,9 @@ TEST_GEN_SYSTEM = textwrap.dedent("""\
 def _task_markdown_above(cells: list[dict], idx: int) -> Optional[str]:
     """Scan upward from cell ``idx`` for the task markdown.
 
-    Skips helper cells (pure-magic / blank code) but stops at real code so we
-    never cross into an unrelated section above. Returns the cleaned markdown
+    Skips helper cells (pure-magic / blank code) and earlier ``%%socratic``
+    attempts, but stops at other real code so we never cross into an unrelated
+    section above. Returns the cleaned markdown
     text only if it is long enough and mentions a task-trigger word, else None.
 
     Shared by all three notebook-sourcing paths — the Colab frontend and
@@ -131,6 +133,9 @@ def _task_markdown_above(cells: list[dict], idx: int) -> Optional[str]:
             above = prev
             break
         prev_src = "".join(prev.get("source", []))
+        if prev_src.lstrip().startswith("%%socratic"):
+            j -= 1  # an earlier attempt at the same task — look past it
+            continue
         if any(ln.strip() and not ln.strip().startswith(("%", "!"))
                for ln in prev_src.splitlines()):
             break  # real code above — don't cross it
@@ -480,7 +485,9 @@ class SocraticWatchdog:
         try:
             mp3 = tempfile.mktemp(suffix=".mp3")
             subprocess.run(
-                ["edge-tts", "--text", text, "--voice", TTS_VOICE,
+                # via sys.executable: the `edge-tts` script is not on PATH when
+                # Jupyter runs from a venv that was never activated
+                [sys.executable, "-m", "edge_tts", "--text", text, "--voice", TTS_VOICE,
                  "--rate", "+5%", "--pitch", "+5Hz", "--write-media", mp3],
                 capture_output=True, timeout=30,
             )

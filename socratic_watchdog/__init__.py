@@ -20,13 +20,11 @@ import os
 import textwrap
 from pathlib import Path
 
-from ._core import SocraticWatchdog, _watchdog
-
 
 def _load_dotenv():
     """Load a nearby .env into os.environ (existing vars win). Stdlib only."""
     # ponytail: walk up a few dirs to find .env; drop python-dotenv dependency
-    for d in [Path.cwd(), *Path.cwd().parents[:4]]:
+    for d in [Path.cwd(), *list(Path.cwd().parents)[:4]]:
         f = d / ".env"
         if f.is_file():
             for line in f.read_text().splitlines():
@@ -37,7 +35,12 @@ def _load_dotenv():
                 os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
             return
 
-__version__ = "0.4.1"
+
+# before _core: it reads SOCRATIC_* settings at import time
+_load_dotenv()
+from ._core import SocraticWatchdog, _watchdog
+
+__version__ = "0.4.2"
 
 __all__ = [
     "SocraticWatchdog",
@@ -51,7 +54,6 @@ def load_ipython_extension(ipython):
     """Called by ``%load_ext socratic_watchdog``."""
     from .magics import SocraticMagics, _post_run_cell_hook
 
-    _load_dotenv()
     ipython.register_magics(SocraticMagics)
     ipython.events.register("post_run_cell", _post_run_cell_hook)
     print(textwrap.dedent("""\

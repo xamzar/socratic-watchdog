@@ -586,3 +586,12 @@ class TestExtractTestsFromCellBelow:
         ]
         result = import_fn(cells, 0)
         assert result == ["assert True"]
+
+
+def test_task_above_skips_earlier_attempts_but_not_other_code():
+    from socratic_watchdog._core import _task_markdown_above
+    md = {"cell_type": "markdown", "source": ["### Task\nWrite fib(n), the n-th Fibonacci number."]}
+    attempt = {"cell_type": "code", "source": ["%%socratic\ndef fib(n):\n    return 0"]}
+    other = {"cell_type": "code", "source": ["x = 1"]}
+    assert "fib(n)" in _task_markdown_above([md, attempt, attempt], 2)
+    assert _task_markdown_above([md, other, attempt], 2) is None
