@@ -353,7 +353,13 @@ def _show_confetti():
 (function(){
   var c=document.getElementById("socratic-confetti");
   var ctx=c.getContext("2d");
-  c.width=window.innerWidth; c.height=window.innerHeight;
+  if(window.self!==window.top){
+    // Colab / VS Code sandbox each output in a small iframe, so a fixed
+    // full-viewport canvas is a few px tall: draw in-flow here instead
+    c.style.position="static"; c.style.display="block";
+    c.style.width="100%"; c.style.height="220px";
+  }
+  c.width=c.clientWidth; c.height=c.clientHeight;
   var particles=[];
   var colors=["#f59e0b","#ef4444","#3b82f6","#10b981","#8b5cf6","#ec4899","#f97316"];
   for(var i=0;i<120;i++){
