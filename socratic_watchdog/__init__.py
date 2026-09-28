@@ -40,7 +40,7 @@ def _load_dotenv():
 _load_dotenv()
 from ._core import SocraticWatchdog, _watchdog
 
-__version__ = "0.4.2"
+__version__ = "0.4.3"
 
 __all__ = [
     "SocraticWatchdog",
