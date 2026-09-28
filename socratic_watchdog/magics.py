@@ -353,7 +353,8 @@ def _show_confetti():
 (function(){
   var c=document.getElementById("socratic-confetti");
   var ctx=c.getContext("2d");
-  if(window.self!==window.top){
+  var strip=window.self!==window.top;
+  if(strip){
     // Colab / VS Code sandbox each output in a small iframe, so a fixed
     // full-viewport canvas is a few px tall: draw in-flow here instead
     c.style.position="static"; c.style.display="block";
@@ -385,6 +386,7 @@ def _show_confetti():
       ctx.restore();
       p.x+=p.vx; p.y+=p.vy;
       p.vy+=0.03; p.rot+=p.rv;
+      if(strip && p.y>c.height+10){ p.y=-10; p.vy=1+Math.random()*2; }  // short strip: keep it raining
     }
     if(elapsed<3.5) requestAnimationFrame(draw);
     else { c.remove(); }
